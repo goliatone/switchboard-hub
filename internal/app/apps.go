@@ -1,0 +1,284 @@
+package app
+
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/goliatone/switchboard-hub/internal/config"
+)
+
+func CreateApp(nameOrHost string, port int) error {
+	p, err := cfgPath()
+	if err != nil {
+		return err
+	}
+	c, err := config.LoadOrCreateDefault(p)
+	if err != nil {
+		return err
+	}
+	if _, err := upsertApp(c, nameOrHost, port); err != nil {
+		return err
+	}
+	if err := config.Save(p, c); err != nil {
+		return err
+	}
+	fmt.Println("saved:", p)
+	return nil
+}
+
+func RemoveApp(name string) error {
+	p, err := cfgPath()
+	if err != nil {
+		return err
+	}
+	c, err := config.LoadOrDefault(p)
+	if err != nil {
+		return err
+	}
+	name, err = normalizeAppNameInput(name)
+	if err != nil {
+		return err
+	}
+
+	idx := findAppByName(c, name)
+	if idx < 0 {
+		return fmt.Errorf("app not found: %s", name)
+	}
+	host := c.Apps[idx].LocalHost
+	c.Apps = append(c.Apps[:idx], c.Apps[idx+1:]...)
+	removeLegacyRouteByHost(c, host)
+	if err := config.Save(p, c); err != nil {
+		return err
+	}
+	fmt.Println("saved:", p)
+	return nil
+}
+
+func ListApps() ([]config.App, error) {
+	p, err := cfgPath()
+	if err != nil {
+		return nil, err
+	}
+	c, err := config.LoadOrDefault(p)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]config.App, len(c.Apps))
+	copy(out, c.Apps)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func upsertApp(c *config.Config, nameOrHost string, port int) (config.App, error) {
+	if c == nil {
+		return config.App{}, errors.New("config is nil")
+	}
+	if err := validateAppPort(port); err != nil {
+		return config.App{}, err
+	}
+	host, err := normalizeAppHost(nameOrHost, c.TLD)
+	if err != nil {
+		return config.App{}, err
+	}
+	name, err := normalizeAppNameFromInput(nameOrHost, host, c.TLD)
+	if err != nil {
+		return config.App{}, err
+	}
+
+	if i := findAppByName(c, name); i >= 0 {
+		return config.App{}, fmt.Errorf("app name already exists: %s", name)
+	}
+	if i := findAppByHost(c, host); i >= 0 {
+		return config.App{}, fmt.Errorf("app host already exists: %s", host)
+	}
+
+	app := config.App{
+		Name:      name,
+		LocalHost: host,
+		LocalPort: port,
+		Metadata:  map[string]string{},
+	}
+	c.Apps = append(c.Apps, app)
+	sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
+	upsertLegacyRoute(c, host, port)
+	return app, nil
+}
+
+func syncAppFromRoute(c *config.Config, host string, port int) error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return errors.New("route host is required")
+	}
+	if err := validateAppPort(port); err != nil {
+		return err
+	}
+	if i := findAppByHost(c, host); i >= 0 {
+		c.Apps[i].LocalPort = port
+		sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
+		return nil
+	}
+	name, err := normalizeAppNameFromInput(host, host, c.TLD)
+	if err != nil {
+		return err
+	}
+	base := name
+	for i := 2; ; i++ {
+		if findAppByName(c, name) < 0 {
+			break
+		}
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
+
+	c.Apps = append(c.Apps, config.App{
+		Name:      name,
+		LocalHost: host,
+		LocalPort: port,
+		Metadata: map[string]string{
+			"source": "legacy-route",
+		},
+	})
+	sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
+	return nil
+}
+
+func findAppByName(c *config.Config, name string) int {
+	if c == nil {
+		return -1
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	for i, a := range c.Apps {
+		if strings.EqualFold(strings.TrimSpace(a.Name), name) {
+			return i
+		}
+	}
+	return -1
+}
+
+func findAppByHost(c *config.Config, host string) int {
+	if c == nil {
+		return -1
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	for i, a := range c.Apps {
+		if strings.EqualFold(strings.TrimSpace(a.LocalHost), host) {
+			return i
+		}
+	}
+	return -1
+}
+
+func validateAppPort(port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid app port %d (expected 1..65535)", port)
+	}
+	return nil
+}
+
+var appNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`)
+
+func normalizeAppNameInput(raw string) (string, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.TrimSuffix(s, ".")
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "https://")
+	if idx := strings.IndexByte(s, '.'); idx > 0 {
+		s = s[:idx]
+	}
+	s = strings.ReplaceAll(s, "_", "-")
+	if strings.Contains(s, " ") {
+		return "", fmt.Errorf("invalid app name %q", raw)
+	}
+	if !appNamePattern.MatchString(s) {
+		return "", fmt.Errorf("invalid app name %q (allowed: lowercase letters, numbers, hyphen)", raw)
+	}
+	return s, nil
+}
+
+func normalizeAppNameFromInput(nameOrHost, host, tld string) (string, error) {
+	raw := strings.TrimSpace(nameOrHost)
+	if strings.Contains(raw, ".") {
+		suffix := "." + strings.ToLower(strings.TrimSpace(tld))
+		h := strings.ToLower(strings.TrimSpace(host))
+		if suffix != "." && strings.HasSuffix(h, suffix) {
+			h = strings.TrimSuffix(h, suffix)
+		}
+		if idx := strings.IndexByte(h, '.'); idx > 0 {
+			h = h[:idx]
+		}
+		return normalizeAppNameInput(h)
+	}
+	return normalizeAppNameInput(raw)
+}
+
+func normalizeAppHost(nameOrHost, tld string) (string, error) {
+	host := normalizeHost(nameOrHost, tld)
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return "", errors.New("app host is required")
+	}
+	if strings.Contains(host, "/") {
+		return "", fmt.Errorf("invalid app host %q", nameOrHost)
+	}
+	if strings.Contains(host, " ") {
+		return "", fmt.Errorf("invalid app host %q", nameOrHost)
+	}
+	if strings.Contains(host, ":") {
+		return "", fmt.Errorf("invalid app host %q (ports are not allowed)", nameOrHost)
+	}
+	return host, nil
+}
+
+func upsertLegacyRoute(c *config.Config, host string, port int) {
+	if c == nil {
+		return
+	}
+	dial := "127.0.0.1:" + strconv.Itoa(port)
+	for i := range c.Routes {
+		if strings.EqualFold(c.Routes[i].Host, host) {
+			c.Routes[i].Dial = dial
+			sort.Slice(c.Routes, func(i, j int) bool { return c.Routes[i].Host < c.Routes[j].Host })
+			return
+		}
+	}
+	c.Routes = append(c.Routes, config.Route{Host: host, Dial: dial})
+	sort.Slice(c.Routes, func(i, j int) bool { return c.Routes[i].Host < c.Routes[j].Host })
+}
+
+func removeLegacyRouteByHost(c *config.Config, host string) {
+	if c == nil {
+		return
+	}
+	out := make([]config.Route, 0, len(c.Routes))
+	for _, r := range c.Routes {
+		if strings.EqualFold(strings.TrimSpace(r.Host), strings.TrimSpace(host)) {
+			continue
+		}
+		out = append(out, r)
+	}
+	c.Routes = out
+}
+
+func removeAppByHost(c *config.Config, host string) {
+	if c == nil {
+		return
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return
+	}
+	out := make([]config.App, 0, len(c.Apps))
+	for _, a := range c.Apps {
+		if strings.EqualFold(strings.TrimSpace(a.LocalHost), host) {
+			continue
+		}
+		out = append(out, a)
+	}
+	c.Apps = out
+}
