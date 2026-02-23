@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,14 +35,211 @@ func TestInitFailsWhenBinaryMissing(t *testing.T) {
 }
 
 func TestInitFailsWhenAuthCheckFails(t *testing.T) {
+	tmp := t.TempDir()
+	certPath := tmp + "/cert.pem"
+	if err := os.WriteFile(certPath, []byte("dummy"), 0o644); err != nil {
+		t.Fatalf("write temp cert: %v", err)
+	}
 	p := New(
 		WithLookPath(func(string) (string, error) { return "/opt/homebrew/bin/cloudflared", nil }),
 		WithCommandRunner(func(context.Context, string, ...string) (string, error) {
 			return "", errors.New("permission denied")
 		}),
 	)
-	if err := p.Init(context.Background(), tunnel.ProviderConfig{}); err == nil {
+	if err := p.Init(context.Background(), tunnel.ProviderConfig{
+		Values: map[string]string{"origincert": certPath},
+	}); err == nil {
 		t.Fatal("expected auth check failure")
+	}
+}
+
+func TestInitFailsWhenOriginCertMissing(t *testing.T) {
+	t.Setenv("TUNNEL_ORIGIN_CERT", "")
+	p := New(
+		WithLookPath(func(string) (string, error) { return "/opt/homebrew/bin/cloudflared", nil }),
+		WithCommandRunner(func(context.Context, string, ...string) (string, error) {
+			return "[]", nil
+		}),
+	)
+	err := p.Init(context.Background(), tunnel.ProviderConfig{})
+	if err == nil {
+		t.Fatal("expected origin cert failure")
+	}
+	details, ok := tunnel.ActionableFromError(err)
+	if !ok {
+		t.Fatalf("expected actionable error, got: %v", err)
+	}
+	if details.Code != errCodeOriginCertMissing {
+		t.Fatalf("unexpected error code: got=%q want=%q", details.Code, errCodeOriginCertMissing)
+	}
+}
+
+func TestInitIncludesOriginCertInCloudflaredArgs(t *testing.T) {
+	tmp := t.TempDir()
+	certPath := tmp + "/cert.pem"
+	if err := os.WriteFile(certPath, []byte("dummy"), 0o644); err != nil {
+		t.Fatalf("write temp cert: %v", err)
+	}
+	seen := []string{}
+	p := New(
+		WithLookPath(func(string) (string, error) { return "/opt/homebrew/bin/cloudflared", nil }),
+		WithCommandRunner(func(_ context.Context, _ string, args ...string) (string, error) {
+			seen = append(seen, strings.Join(args, " "))
+			return "[]", nil
+		}),
+	)
+	if err := p.Init(context.Background(), tunnel.ProviderConfig{
+		Values: map[string]string{"origincert": certPath},
+	}); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("expected at least one cloudflared command")
+	}
+	if !strings.Contains(seen[0], "--origincert "+certPath) {
+		t.Fatalf("expected --origincert in command, got: %q", seen[0])
+	}
+}
+
+func TestInitAPIModeFailsWhenTokenMissing(t *testing.T) {
+	t.Setenv("SWITCHD_CF_API_TOKEN", "")
+	p := New(
+		WithLookPath(func(string) (string, error) { return "/opt/homebrew/bin/cloudflared", nil }),
+	)
+	err := p.Init(context.Background(), tunnel.ProviderConfig{
+		Values: map[string]string{
+			"mode":       "api",
+			"account_id": "acct-1",
+			"zone_id":    "zone-1",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected token missing error")
+	}
+	details, ok := tunnel.ActionableFromError(err)
+	if !ok {
+		t.Fatalf("expected actionable error, got: %v", err)
+	}
+	if details.Code != errCodeAPITokenMissing {
+		t.Fatalf("unexpected code: got=%q want=%q", details.Code, errCodeAPITokenMissing)
+	}
+}
+
+func TestEnsureEndpointAPIModeCreatesTunnelAndDNS(t *testing.T) {
+	t.Setenv("SWITCHD_CF_API_TOKEN", "token-1")
+	type reqLog struct {
+		method string
+		path   string
+	}
+	logs := []reqLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logs = append(logs, reqLog{method: r.Method, path: r.URL.Path})
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-1/cfd_tunnel":
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":[]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts/acct-1/cfd_tunnel":
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":{"id":"tun-1","name":"switchd-esign"}}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/accounts/acct-1/cfd_tunnel/tun-1/configurations":
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":{"ok":true}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-1/dns_records":
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":[]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/dns_records":
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":{"id":"dns-1"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1003,"message":"not found"}],"result":null}`))
+		}
+	}))
+	defer srv.Close()
+
+	p := New(
+		WithLookPath(func(string) (string, error) { return "/opt/homebrew/bin/cloudflared", nil }),
+	)
+	cfg := tunnel.ProviderConfig{
+		Values: map[string]string{
+			"mode":         "api",
+			"account_id":   "acct-1",
+			"zone_id":      "zone-1",
+			"api_base_url": srv.URL,
+		},
+	}
+	if err := p.Init(context.Background(), cfg); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	ep, err := p.EnsureEndpoint(context.Background(), tunnel.EndpointRequest{
+		Name:       "esign",
+		PublicHost: "esign.tnl.example.com",
+		LocalURL:   "http://127.0.0.1:3000",
+	})
+	if err != nil {
+		t.Fatalf("EnsureEndpoint returned error: %v", err)
+	}
+	if ep.ID != "tun-1" {
+		t.Fatalf("unexpected tunnel id: %q", ep.ID)
+	}
+	if ep.Host != "esign.tnl.example.com" {
+		t.Fatalf("unexpected host: %q", ep.Host)
+	}
+	if len(logs) < 4 {
+		t.Fatalf("expected api calls, got=%d", len(logs))
+	}
+}
+
+func TestStartAPIModeRunsCloudflaredWithToken(t *testing.T) {
+	t.Setenv("SWITCHD_CF_API_TOKEN", "token-1")
+	fp := &fakeProcess{pid: 5151}
+	startArgs := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-1/cfd_tunnel":
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":[{"id":"tun-1","name":"switchd-esign"}]}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/accounts/acct-1/cfd_tunnel/tun-1/configurations":
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":{"ok":true}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-1/cfd_tunnel/tun-1/token":
+			_, _ = w.Write([]byte(`{"success":true,"errors":[],"result":"runtime-token"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1003,"message":"not found"}],"result":null}`))
+		}
+	}))
+	defer srv.Close()
+
+	p := New(
+		WithLookPath(func(string) (string, error) { return "/opt/homebrew/bin/cloudflared", nil }),
+		WithProcessStarter(func(_ string, args ...string) (process, error) {
+			startArgs = append(startArgs, strings.Join(args, " "))
+			return fp, nil
+		}),
+	)
+	cfg := tunnel.ProviderConfig{
+		Values: map[string]string{
+			"mode":         "api",
+			"account_id":   "acct-1",
+			"zone_id":      "zone-1",
+			"api_base_url": srv.URL,
+		},
+	}
+	if err := p.Init(context.Background(), cfg); err != nil {
+		t.Fatalf("Init returned error: %v", err)
+	}
+	session, err := p.Start(context.Background(), tunnel.StartRequest{
+		Endpoint: tunnel.Endpoint{
+			ID:       "tun-1",
+			Provider: "cloudflare",
+			Host:     "esign.tnl.example.com",
+		},
+		LocalURL: "http://127.0.0.1:3000",
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	if session.PID != 5151 {
+		t.Fatalf("unexpected pid: %d", session.PID)
+	}
+	if len(startArgs) == 0 || !strings.Contains(startArgs[0], "run --token runtime-token") {
+		t.Fatalf("expected tokenized run args, got=%v", startArgs)
 	}
 }
 

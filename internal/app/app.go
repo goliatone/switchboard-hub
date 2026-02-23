@@ -20,6 +20,10 @@ import (
 )
 
 func cfgPath() (string, error) {
+	override := strings.TrimSpace(os.Getenv("SWITCHD_CONFIG_PATH"))
+	if override != "" {
+		return filepath.Clean(override), nil
+	}
 	home, err := runUserHomeDir()
 	if err != nil {
 		return "", err
@@ -409,10 +413,46 @@ func Status() error {
 	if err != nil {
 		fmt.Println("- Caddy:", "admin unreachable:", err)
 		fmt.Println("  Start: sudo switchd caddy run")
+	} else {
+		_ = resp.Body.Close()
+		fmt.Println("- Caddy:", "admin reachable")
+	}
+
+	fmt.Println("- Apps:", fmt.Sprintf("%d configured", len(c.Apps)))
+	if len(c.Apps) == 0 {
+		fmt.Println("  (none)")
 		return nil
 	}
-	_ = resp.Body.Close()
-	fmt.Println("- Caddy:", "admin reachable")
+	for _, a := range c.Apps {
+		fmt.Printf("  - %s: host=%s port=%d\n", a.Name, a.LocalHost, a.LocalPort)
+	}
+
+	health, hErr := appTunnelHealthStatusFromConfig(c)
+	if hErr != nil {
+		fmt.Println("- Tunnel health:", "error:", hErr)
+		return nil
+	}
+	fmt.Println("- Tunnel health:")
+	for _, h := range health {
+		if strings.TrimSpace(h.Provider) == "" {
+			fmt.Printf("  - %s: no tunnel configured\n", h.AppName)
+			continue
+		}
+		base := fmt.Sprintf("  - %s: provider=%s host=%s", h.AppName, h.Provider, h.EndpointHost)
+		if strings.TrimSpace(h.Err) != "" {
+			fmt.Printf("%s status=error %s\n", base, h.Err)
+			continue
+		}
+		status := "not-ready"
+		if h.Ready {
+			status = "ready"
+		}
+		sessionInfo := strings.TrimSpace(sessionSummary(h.SessionPID, h.StartedAt))
+		if sessionInfo != "" {
+			sessionInfo = " " + sessionInfo
+		}
+		fmt.Printf("%s status=%s %s%s\n", base, status, h.Message, sessionInfo)
+	}
 
 	return nil
 }

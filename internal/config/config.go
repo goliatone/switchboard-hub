@@ -67,10 +67,12 @@ type App struct {
 }
 
 type AppPublicEndpoint struct {
-	Provider        string `yaml:"provider,omitempty"`
-	Host            string `yaml:"host,omitempty"`
-	EndpointID      string `yaml:"endpoint_id,omitempty"`
-	ActiveSessionID string `yaml:"active_session_id,omitempty"`
+	Provider             string `yaml:"provider,omitempty"`
+	Host                 string `yaml:"host,omitempty"`
+	EndpointID           string `yaml:"endpoint_id,omitempty"`
+	ActiveSessionID      string `yaml:"active_session_id,omitempty"`
+	ActiveSessionPID     int    `yaml:"active_session_pid,omitempty"`
+	ActiveSessionStarted string `yaml:"active_session_started_at,omitempty"`
 }
 
 type AppOAuth struct {
@@ -256,10 +258,12 @@ func normalizeApps(apps []App) []App {
 			LocalHost: normalizeHost(a.LocalHost),
 			LocalPort: a.LocalPort,
 			PublicEndpoint: AppPublicEndpoint{
-				Provider:        strings.ToLower(strings.TrimSpace(a.PublicEndpoint.Provider)),
-				Host:            normalizeHost(a.PublicEndpoint.Host),
-				EndpointID:      strings.TrimSpace(a.PublicEndpoint.EndpointID),
-				ActiveSessionID: strings.TrimSpace(a.PublicEndpoint.ActiveSessionID),
+				Provider:             strings.ToLower(strings.TrimSpace(a.PublicEndpoint.Provider)),
+				Host:                 normalizeHost(a.PublicEndpoint.Host),
+				EndpointID:           strings.TrimSpace(a.PublicEndpoint.EndpointID),
+				ActiveSessionID:      strings.TrimSpace(a.PublicEndpoint.ActiveSessionID),
+				ActiveSessionPID:     a.PublicEndpoint.ActiveSessionPID,
+				ActiveSessionStarted: strings.TrimSpace(a.PublicEndpoint.ActiveSessionStarted),
 			},
 			OAuth: AppOAuth{
 				Google: AppGoogleOAuth{

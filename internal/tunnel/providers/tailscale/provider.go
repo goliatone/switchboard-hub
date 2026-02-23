@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goliatone/switchboard-hub/internal/diag"
 	"github.com/goliatone/switchboard-hub/internal/tunnel"
 )
 
@@ -278,16 +279,17 @@ func tunnelNameFrom(raw string) string {
 }
 
 func runCommand(ctx context.Context, name string, args ...string) (string, error) {
+	diag.LogCommand(name, args...)
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
 		if s == "" {
-			return "", err
+			return "", diag.SanitizeError(err)
 		}
-		return "", fmt.Errorf("%v: %s", err, s)
+		return "", fmt.Errorf("%v: %s", diag.SanitizeError(err), diag.Redact(s))
 	}
-	return s, nil
+	return diag.Redact(s), nil
 }
 
 var _ tunnel.Provider = (*Provider)(nil)

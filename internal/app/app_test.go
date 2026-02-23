@@ -1,6 +1,7 @@
 package app
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -57,5 +58,17 @@ func TestValidateTLSConfigFileModeRequiresAbsolutePaths(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "absolute path") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCfgPathCanBeOverriddenForTesting(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "switchd-config.yaml")
+	t.Setenv("SWITCHD_CONFIG_PATH", want)
+	got, err := cfgPath()
+	if err != nil {
+		t.Fatalf("cfgPath returned error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("unexpected cfgPath override: got=%q want=%q", got, want)
 	}
 }

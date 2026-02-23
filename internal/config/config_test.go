@@ -149,9 +149,12 @@ func TestSaveLoad_RoundTripMixedLegacyAndNewSchema(t *testing.T) {
 				LocalHost: "esign.test",
 				LocalPort: 3000,
 				PublicEndpoint: AppPublicEndpoint{
-					Provider:   "cloudflare",
-					Host:       "esign-oauth.dev.example.com",
-					EndpointID: "tunnel-123",
+					Provider:             "cloudflare",
+					Host:                 "esign-oauth.dev.example.com",
+					EndpointID:           "tunnel-123",
+					ActiveSessionID:      "session-1",
+					ActiveSessionPID:     4242,
+					ActiveSessionStarted: "2026-02-21T10:00:00Z",
 				},
 				OAuth: AppOAuth{
 					Google: AppGoogleOAuth{
@@ -177,6 +180,12 @@ func TestSaveLoad_RoundTripMixedLegacyAndNewSchema(t *testing.T) {
 	}
 	if len(got.Apps) != 1 || got.Apps[0].PublicEndpoint.Host != "esign-oauth.dev.example.com" {
 		t.Fatalf("unexpected apps after roundtrip: %#v", got.Apps)
+	}
+	if got.Apps[0].PublicEndpoint.ActiveSessionPID != 4242 {
+		t.Fatalf("unexpected active_session_pid: %d", got.Apps[0].PublicEndpoint.ActiveSessionPID)
+	}
+	if got.Apps[0].PublicEndpoint.ActiveSessionStarted != "2026-02-21T10:00:00Z" {
+		t.Fatalf("unexpected active_session_started_at: %q", got.Apps[0].PublicEndpoint.ActiveSessionStarted)
 	}
 	if got.Apps[0].OAuth.Google.CallbackPath != "/admin/esign/integrations/google/callback" {
 		t.Fatalf("unexpected callback_path: %q", got.Apps[0].OAuth.Google.CallbackPath)
