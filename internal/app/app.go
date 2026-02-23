@@ -239,7 +239,6 @@ func AddRoute(nameOrHost string, port int) error {
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
 	return nil
 }
 
@@ -271,7 +270,6 @@ func RemoveRoute(nameOrHost string) error {
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
 	return nil
 }
 

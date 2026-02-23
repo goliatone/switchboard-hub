@@ -95,7 +95,6 @@ func TunnelInitWithOptions(providerName string, opts TunnelInitOptions) error {
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
 	return nil
 }
 
@@ -195,7 +194,6 @@ func ExposeApp(name, providerName, publicHost string) error {
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
 	return nil
 }
 
@@ -265,7 +263,6 @@ func AppUp(name string) error {
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
 	return nil
 }
 
@@ -305,7 +302,6 @@ func AppDown(name string) error {
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
 	return nil
 }
 

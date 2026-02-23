@@ -65,15 +65,12 @@ func OAuthGoogleEnable(appName, callbackPath string) error {
 	if err != nil {
 		return err
 	}
-	redirectURI, err := configureGoogleOAuth(&c.Apps[idx], callbackPath)
-	if err != nil {
+	if _, err := configureGoogleOAuth(&c.Apps[idx], callbackPath); err != nil {
 		return err
 	}
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
-	fmt.Println("google redirect_uri:", redirectURI)
 	return nil
 }
 

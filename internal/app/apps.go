@@ -26,7 +26,6 @@ func CreateApp(nameOrHost string, port int) error {
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
 	return nil
 }
 
@@ -54,7 +53,6 @@ func RemoveApp(name string) error {
 	if err := config.Save(p, c); err != nil {
 		return err
 	}
-	fmt.Println("saved:", p)
 	return nil
 }
 
