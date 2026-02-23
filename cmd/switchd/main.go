@@ -7,23 +7,26 @@ import (
 	"strings"
 
 	"github.com/goliatone/switchboard-hub/internal/app"
+	"github.com/goliatone/switchboard-hub/internal/diag"
+	"github.com/goliatone/switchboard-hub/internal/tunnel"
 )
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `switchd - manage *.test local DNS + Caddy routes (switchboard-hub)
 
 Usage:
+  switchd [--debug] <command> ...
   switchd init [--tld test] [--dns-ip 10.0.0.1] [--tls] [--tls-mode internal|file] [--tls-cert-file <path>] [--tls-key-file <path>] # sudo
   switchd app create <name-or-host> --port <port>
   switchd app rm <name>
   switchd app ls
-  switchd app expose <name> [--provider <provider>] --public-host <fqdn>
+  switchd app expose <name> [--provider <provider>] [--public-host <fqdn>]
   switchd app up <name>
   switchd app down <name>
   switchd app oauth google enable <name> --callback-path <path>
   switchd app oauth google print <name>
   switchd tunnel providers
-  switchd tunnel init --provider <provider>
+  switchd tunnel init --provider <provider> [--mode cli|api] [--setup] [--non-interactive] [--origincert <path>] [--account-id <id>] [--zone-id <id>] [--base-domain <domain>] [--api-token-env <ENV_NAME>]
   switchd tunnel status [--provider <provider>]
   switchd add <name-or-host> --port <port>
   switchd rm <name-or-host>
@@ -38,8 +41,8 @@ Usage:
 Examples:
   sudo switchd init --tld test --dns-ip 10.0.0.1
   switchd app create esign --port 3000
-  switchd tunnel init --provider cloudflare
-  switchd app expose esign --provider cloudflare --public-host esign-oauth.dev.example.com
+  switchd tunnel init --provider cloudflare --mode api --account-id <id> --zone-id <id> --base-domain tnl.example.com
+  switchd app expose esign --provider cloudflare
   switchd app oauth google enable esign --callback-path /admin/esign/integrations/google/callback
   switchd app oauth google print esign
   switchd add my-local-app --port 3030
@@ -104,14 +107,71 @@ func parseInterspersedFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 	return append(fs.Args(), posArgs...), nil
 }
 
+func extractGlobalFlags(args []string) ([]string, bool) {
+	out := make([]string, 0, len(args))
+	debug := false
+	for _, a := range args {
+		switch a {
+		case "--debug", "-debug":
+			debug = true
+		default:
+			out = append(out, a)
+		}
+	}
+	return out, debug
+}
+
+func printActionableErr(prefix string, err error) bool {
+	details, ok := tunnel.ActionableFromError(err)
+	if !ok {
+		return false
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "error"
+	}
+	if strings.TrimSpace(details.Code) != "" {
+		fmt.Fprintf(os.Stderr, "%s [%s]\n", prefix, details.Code)
+	} else {
+		fmt.Fprintln(os.Stderr, prefix)
+	}
+	if strings.TrimSpace(details.What) != "" {
+		fmt.Fprintln(os.Stderr, "what:", details.What)
+	}
+	if strings.TrimSpace(details.Why) != "" {
+		fmt.Fprintln(os.Stderr, "why:", details.Why)
+	}
+	for _, check := range details.Checks {
+		check = strings.TrimSpace(check)
+		if check == "" {
+			continue
+		}
+		fmt.Fprintln(os.Stderr, "check:", check)
+	}
+	for i, step := range details.NextSteps {
+		step = strings.TrimSpace(step)
+		if step == "" {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "do %d: %s\n", i+1, step)
+	}
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		fmt.Fprintln(os.Stderr, "detail:", err)
+	}
+	return true
+}
+
 func main() {
-	if len(os.Args) < 2 {
+	rawArgs, debug := extractGlobalFlags(os.Args[1:])
+	diag.SetDebug(debug)
+
+	if len(rawArgs) < 1 {
 		usage()
 		os.Exit(2)
 	}
 
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	cmd := rawArgs[0]
+	args := rawArgs[1:]
 
 	switch cmd {
 	case "init":
@@ -197,7 +257,7 @@ func main() {
 		case "expose":
 			fs := flag.NewFlagSet("app expose", flag.ExitOnError)
 			provider := fs.String("provider", "", "tunnel provider (defaults to config tunnels.default_provider)")
-			publicHost := fs.String("public-host", "", "public callback host (required)")
+			publicHost := fs.String("public-host", "", "public callback host (optional for cloudflare with base_domain configured)")
 			pos, err := parseInterspersedFlags(fs, args[1:])
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "app expose error:", err)
@@ -205,10 +265,6 @@ func main() {
 			}
 			if len(pos) != 1 {
 				fmt.Fprintln(os.Stderr, "app expose error: provide exactly one <name>")
-				os.Exit(2)
-			}
-			if strings.TrimSpace(*publicHost) == "" {
-				fmt.Fprintln(os.Stderr, "app expose error: --public-host is required")
 				os.Exit(2)
 			}
 			if err := app.ExposeApp(pos[0], *provider, *publicHost); err != nil {
@@ -312,6 +368,14 @@ func main() {
 		case "init":
 			fs := flag.NewFlagSet("tunnel init", flag.ExitOnError)
 			provider := fs.String("provider", "", "provider name (required)")
+			mode := fs.String("mode", "", "cloudflare mode: cli or api")
+			setup := fs.Bool("setup", false, "attempt provider bootstrap if preflight fails (cloudflare: runs `cloudflared tunnel login`)")
+			nonInteractive := fs.Bool("non-interactive", false, "disable interactive setup flow")
+			originCert := fs.String("origincert", "", "cloudflare origin cert path override")
+			accountID := fs.String("account-id", "", "cloudflare account id (for mode=api)")
+			zoneID := fs.String("zone-id", "", "cloudflare zone id (for mode=api)")
+			baseDomain := fs.String("base-domain", "", "default public tunnel base domain, e.g. tnl.example.com")
+			apiTokenEnv := fs.String("api-token-env", "", "env var holding cloudflare api token (default: SWITCHD_CF_API_TOKEN)")
 			if err := fs.Parse(args[1:]); err != nil {
 				fmt.Fprintln(os.Stderr, "tunnel init error:", err)
 				os.Exit(2)
@@ -320,8 +384,19 @@ func main() {
 				fmt.Fprintln(os.Stderr, "tunnel init error: --provider is required")
 				os.Exit(2)
 			}
-			if err := app.TunnelInit(*provider); err != nil {
-				fmt.Fprintln(os.Stderr, "tunnel init error:", err)
+			if err := app.TunnelInitWithOptions(*provider, app.TunnelInitOptions{
+				Setup:          *setup,
+				NonInteractive: *nonInteractive,
+				OriginCert:     *originCert,
+				Mode:           *mode,
+				AccountID:      *accountID,
+				ZoneID:         *zoneID,
+				BaseDomain:     *baseDomain,
+				APITokenEnv:    *apiTokenEnv,
+			}); err != nil {
+				if !printActionableErr("tunnel init error", err) {
+					fmt.Fprintln(os.Stderr, "tunnel init error:", err)
+				}
 				os.Exit(1)
 			}
 			fmt.Println("tunnel provider initialized")

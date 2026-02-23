@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"reflect"
 	"testing"
 )
 
@@ -51,5 +52,16 @@ func TestParseInterspersedFlags_UnknownFlag(t *testing.T) {
 
 	if _, err := parseInterspersedFlags(fs, []string{"--nope", "x"}); err == nil {
 		t.Fatal("expected unknown flag error")
+	}
+}
+
+func TestExtractGlobalFlags(t *testing.T) {
+	args, debug := extractGlobalFlags([]string{"--debug", "app", "ls"})
+	if !debug {
+		t.Fatal("expected debug=true")
+	}
+	want := []string{"app", "ls"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("unexpected args: got=%v want=%v", args, want)
 	}
 }
