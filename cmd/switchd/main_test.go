@@ -56,8 +56,11 @@ func TestParseInterspersedFlags_UnknownFlag(t *testing.T) {
 }
 
 func TestExtractGlobalFlags(t *testing.T) {
-	args, debug := extractGlobalFlags([]string{"--debug", "app", "ls"})
-	if !debug {
+	args, opts, err := extractGlobalFlags([]string{"--debug", "app", "ls"})
+	if err != nil {
+		t.Fatalf("extractGlobalFlags returned error: %v", err)
+	}
+	if !opts.Debug {
 		t.Fatal("expected debug=true")
 	}
 	want := []string{"app", "ls"}
