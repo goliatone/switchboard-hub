@@ -19,12 +19,12 @@ import (
 )
 
 type TunnelProviderStatus struct {
-	Name          string
-	Enabled       bool
-	Available     bool
-	OAuthSuitable bool
-	Notes         []string
-	Err           string
+	Name          string   `json:"name"`
+	Enabled       bool     `json:"enabled"`
+	Available     bool     `json:"available"`
+	OAuthSuitable bool     `json:"oauth_suitable"`
+	Notes         []string `json:"notes,omitempty"`
+	Err           string   `json:"error,omitempty"`
 }
 
 var providerRegistryFactory = providers.Registry
@@ -570,16 +570,16 @@ func normalizePublicHost(raw string) (string, error) {
 }
 
 type AppTunnelHealth struct {
-	AppName      string
-	Provider     string
-	EndpointHost string
-	EndpointID   string
-	SessionID    string
-	SessionPID   int
-	StartedAt    string
-	Ready        bool
-	Message      string
-	Err          string
+	AppName      string `json:"app_name"`
+	Provider     string `json:"provider"`
+	EndpointHost string `json:"endpoint_host"`
+	EndpointID   string `json:"endpoint_id"`
+	SessionID    string `json:"session_id"`
+	SessionPID   int    `json:"session_pid"`
+	StartedAt    string `json:"started_at"`
+	Ready        bool   `json:"ready"`
+	Message      string `json:"message"`
+	Err          string `json:"error,omitempty"`
 }
 
 func AppTunnelHealthStatus() ([]AppTunnelHealth, error) {
