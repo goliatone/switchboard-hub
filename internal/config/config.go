@@ -14,75 +14,75 @@ import (
 )
 
 type Config struct {
-	TLD    string  `yaml:"tld"`
-	DNS    DNS     `yaml:"dns"`
-	Caddy  Caddy   `yaml:"caddy"`
-	Routes []Route `yaml:"routes"`
-	Tunnel Tunnels `yaml:"tunnels,omitempty"`
-	Apps   []App   `yaml:"apps,omitempty"`
+	TLD    string  `yaml:"tld" json:"tld"`
+	DNS    DNS     `yaml:"dns" json:"dns"`
+	Caddy  Caddy   `yaml:"caddy" json:"caddy"`
+	Routes []Route `yaml:"routes" json:"routes"`
+	Tunnel Tunnels `yaml:"tunnels,omitempty" json:"tunnels,omitempty"`
+	Apps   []App   `yaml:"apps,omitempty" json:"apps,omitempty"`
 }
 
 type DNS struct {
-	IP string `yaml:"ip"`
+	IP string `yaml:"ip" json:"ip"`
 }
 
 type Caddy struct {
-	Admin  string   `yaml:"admin"`
-	Listen []string `yaml:"listen"`
-	TLS    CaddyTLS `yaml:"tls"`
+	Admin  string   `yaml:"admin" json:"admin"`
+	Listen []string `yaml:"listen" json:"listen"`
+	TLS    CaddyTLS `yaml:"tls" json:"tls"`
 }
 
 type CaddyTLS struct {
-	Enabled  bool     `yaml:"enabled"`
-	Mode     string   `yaml:"mode"`
-	Listen   []string `yaml:"listen"`
-	CertFile string   `yaml:"cert_file,omitempty"`
-	KeyFile  string   `yaml:"key_file,omitempty"`
+	Enabled  bool     `yaml:"enabled" json:"enabled"`
+	Mode     string   `yaml:"mode" json:"mode"`
+	Listen   []string `yaml:"listen" json:"listen"`
+	CertFile string   `yaml:"cert_file,omitempty" json:"cert_file,omitempty"`
+	KeyFile  string   `yaml:"key_file,omitempty" json:"key_file,omitempty"`
 }
 
 type Route struct {
-	Host string `yaml:"host"`
-	Dial string `yaml:"dial"`
+	Host string `yaml:"host" json:"host"`
+	Dial string `yaml:"dial" json:"dial"`
 }
 
 type Tunnels struct {
-	DefaultProvider string                       `yaml:"default_provider,omitempty"`
-	Providers       map[string]TunnelProviderCfg `yaml:"providers,omitempty"`
+	DefaultProvider string                       `yaml:"default_provider,omitempty" json:"default_provider,omitempty"`
+	Providers       map[string]TunnelProviderCfg `yaml:"providers,omitempty" json:"providers,omitempty"`
 }
 
 type TunnelProviderCfg struct {
-	Enabled   bool              `yaml:"enabled,omitempty"`
-	AccountID string            `yaml:"account_id,omitempty"`
-	Zone      string            `yaml:"zone,omitempty"`
-	Values    map[string]string `yaml:"values,omitempty"`
+	Enabled   bool              `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	AccountID string            `yaml:"account_id,omitempty" json:"account_id,omitempty"`
+	Zone      string            `yaml:"zone,omitempty" json:"zone,omitempty"`
+	Values    map[string]string `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 type App struct {
-	Name           string            `yaml:"name"`
-	LocalHost      string            `yaml:"local_host"`
-	LocalPort      int               `yaml:"local_port"`
-	PublicEndpoint AppPublicEndpoint `yaml:"public_endpoint,omitempty"`
-	OAuth          AppOAuth          `yaml:"oauth,omitempty"`
-	Metadata       map[string]string `yaml:"metadata,omitempty"`
+	Name           string            `yaml:"name" json:"name"`
+	LocalHost      string            `yaml:"local_host" json:"local_host"`
+	LocalPort      int               `yaml:"local_port" json:"local_port"`
+	PublicEndpoint AppPublicEndpoint `yaml:"public_endpoint,omitempty" json:"public_endpoint,omitempty"`
+	OAuth          AppOAuth          `yaml:"oauth,omitempty" json:"oauth,omitempty"`
+	Metadata       map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 type AppPublicEndpoint struct {
-	Provider             string `yaml:"provider,omitempty"`
-	Host                 string `yaml:"host,omitempty"`
-	EndpointID           string `yaml:"endpoint_id,omitempty"`
-	ActiveSessionID      string `yaml:"active_session_id,omitempty"`
-	ActiveSessionPID     int    `yaml:"active_session_pid,omitempty"`
-	ActiveSessionStarted string `yaml:"active_session_started_at,omitempty"`
+	Provider             string `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Host                 string `yaml:"host,omitempty" json:"host,omitempty"`
+	EndpointID           string `yaml:"endpoint_id,omitempty" json:"endpoint_id,omitempty"`
+	ActiveSessionID      string `yaml:"active_session_id,omitempty" json:"active_session_id,omitempty"`
+	ActiveSessionPID     int    `yaml:"active_session_pid,omitempty" json:"active_session_pid,omitempty"`
+	ActiveSessionStarted string `yaml:"active_session_started_at,omitempty" json:"active_session_started_at,omitempty"`
 }
 
 type AppOAuth struct {
-	Google AppGoogleOAuth `yaml:"google,omitempty"`
+	Google AppGoogleOAuth `yaml:"google,omitempty" json:"google,omitempty"`
 }
 
 type AppGoogleOAuth struct {
-	Enabled      bool   `yaml:"enabled,omitempty"`
-	CallbackPath string `yaml:"callback_path,omitempty"`
-	RedirectURI  string `yaml:"redirect_uri,omitempty"`
+	Enabled      bool   `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	CallbackPath string `yaml:"callback_path,omitempty" json:"callback_path,omitempty"`
+	RedirectURI  string `yaml:"redirect_uri,omitempty" json:"redirect_uri,omitempty"`
 }
 
 func Default(tld, dnsIP string) *Config {
