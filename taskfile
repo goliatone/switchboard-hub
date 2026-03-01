@@ -138,13 +138,13 @@ function go:build {
 ## Build binary with version/build metadata from .version + git.
 ##
 ## Arguments:
-## @arg 1 {string} [output=./build/$BINAME]
+## @arg 1 {string} [output=./bin/$BINAME]
 ## @arg 2 {string} [build_tags=$BUILD_TAGS]
 ##
 function go:build:versioned {
     lgr I "Building project..."
 
-    local output=${1:-"./build/$BINAME"}
+    local output=${1:-"./bin/$BINAME"}
     local cli_build_tags=${2}
     local active_build_tags="${cli_build_tags:-${BUILD_TAGS:-}}"
     local git_commit
@@ -199,10 +199,10 @@ function install:local {
     lgr I "Installing ts to /usr/local/bin..."
 
     # Build the binary first
-    go:build ./build/$BINAME
+    go:build ./bin/$BINAME
 
     if [ $? -eq 0 ]; then
-        sudo cp ./build/$BINAME /usr/local/bin/$BINAME
+        sudo cp ./bin/$BINAME /usr/local/bin/$BINAME
         sudo chmod +x /usr/local/bin/$BINAME
         lgr OK "$BINAME installed to /usr/local/bin"
 
