@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -13,6 +14,14 @@ import (
 	"github.com/goliatone/switchboard-hub/internal/config"
 	"github.com/goliatone/switchboard-hub/internal/diag"
 	"github.com/goliatone/switchboard-hub/internal/tunnel"
+)
+
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+	buildTags = ""
+	gitTag    = ""
 )
 
 type globalFlags struct {
@@ -44,6 +53,7 @@ type CLI struct {
 	Open      OpenCmd      `cmd:"" help:"Open app URL in browser."`
 	Uninstall UninstallCmd `cmd:"" help:"Uninstall switchd local setup."`
 	Status    StatusCmd    `cmd:"" help:"Show status diagnostics."`
+	Version   VersionCmd   `cmd:"" help:"Show build/version info."`
 	Caddy     CaddyCmd     `cmd:"" help:"Caddy control commands."`
 	Help      HelpCmd      `cmd:"" help:"Show help for a command path."`
 }
@@ -479,6 +489,34 @@ type CaddyCmd struct {
 	Run CaddyRunCmd `cmd:"" name:"run" help:"Run Caddy foreground process."`
 }
 
+type VersionCmd struct{}
+
+func (c *VersionCmd) Run(r *runContext) error {
+	info := map[string]any{
+		"version":    strings.TrimSpace(version),
+		"git_tag":    strings.TrimSpace(gitTag),
+		"commit":     strings.TrimSpace(commit),
+		"build_date": strings.TrimSpace(buildDate),
+		"build_tags": strings.TrimSpace(buildTags),
+		"go_version": runtime.Version(),
+	}
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, info)
+		return nil
+	}
+	fmt.Printf("version:    %s\n", info["version"])
+	if gt := fmt.Sprint(info["git_tag"]); gt != "" {
+		fmt.Printf("tag:        %s\n", gt)
+	}
+	fmt.Printf("commit:     %s\n", info["commit"])
+	fmt.Printf("build date: %s\n", info["build_date"])
+	if bt := fmt.Sprint(info["build_tags"]); bt != "" {
+		fmt.Printf("build tags: %s\n", bt)
+	}
+	fmt.Printf("go:         %s\n", info["go_version"])
+	return nil
+}
+
 type CaddyRunCmd struct{}
 
 func (c *CaddyRunCmd) Run(_ *runContext) error {
@@ -723,7 +761,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, err := parser.Parse(os.Args[1:])
+	args := os.Args[1:]
+	if len(args) == 0 {
+		args = []string{"--help"}
+	}
+
+	ctx, err := parser.Parse(args)
 	if err != nil {
 		parser.FatalIfErrorf(err)
 		return
