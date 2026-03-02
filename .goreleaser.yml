@@ -1,0 +1,50 @@
+version: 2
+
+project_name: switchboard-hub
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: switchd
+    main: ./cmd/switchd
+    binary: switchd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: switchd
+    ids:
+      - switchd
+    name_template: >-
+      {{- .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end -}}
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^style:"
+

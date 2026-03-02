@@ -2,293 +2,551 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 
+	"github.com/alecthomas/kong"
 	"github.com/goliatone/switchboard-hub/internal/app"
 	"github.com/goliatone/switchboard-hub/internal/config"
 	"github.com/goliatone/switchboard-hub/internal/diag"
 	"github.com/goliatone/switchboard-hub/internal/tunnel"
 )
 
-func usage() {
-	printRootUsage(os.Stderr)
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+	buildTags = ""
+	gitTag    = ""
+)
+
+type globalFlags struct {
+	Debug   bool   `name:"debug" help:"Enable debug logs."`
+	Verbose bool   `name:"verbose" short:"v" help:"Alias for --debug."`
+	Quiet   bool   `name:"quiet" short:"q" help:"Suppress non-essential success/info output."`
+	JSON    bool   `name:"json" help:"Print machine-readable JSON output when supported."`
+	Output  string `name:"output" enum:"text,json" default:"text" help:"Output mode."`
 }
 
-func printRootUsage(w io.Writer) {
-	fmt.Fprintf(w, `switchd - manage *.test local DNS + Caddy routes (switchboard-hub)
-
-Usage:
-  switchd [global options] <command> ...
-
-Global options:
-  --debug            Enable debug logs
-  --verbose, -v      Alias for --debug
-  --quiet, -q        Suppress non-essential success/info output
-  --json             Print machine-readable JSON output when supported
-  --output text|json Output mode (same as --json when set to json)
-  -h, --help         Show help
-
-Commands:
-  switchd init [--tld test] [--dns-ip 10.0.0.1] [--tls] [--tls-mode internal|file] [--tls-cert-file <path>] [--tls-key-file <path>] # sudo
-  switchd app <subcommand>
-  switchd tunnel <subcommand>
-  switchd add <name-or-host> --port <port>
-  switchd rm <name-or-host>
-  switchd ls
-  switchd apply
-  switchd tls mkcert [--install] [--cert-file <path>] [--key-file <path>]
-  switchd open <name-or-host> [--scheme http|https]
-  switchd uninstall                                       # sudo
-  switchd status
-  switchd caddy run                                       # sudo (binds :80/:443)
-  switchd help [command]
-
-Examples:
-  sudo switchd init --tld test --dns-ip 10.0.0.1
-  switchd app create esign --port 3000
-  switchd app expose esign --provider cloudflare --public-host esign.getctx.com
-  switchd app up esign
-  switchd tunnel init --provider cloudflare --mode api --account-id <id> --zone-id <id> --base-domain getctx.com
-
-Help:
-  switchd help app
-  switchd help tunnel
-  switchd app --help
-  switchd tunnel --help
-`)
-}
-
-func printAppUsage(w io.Writer) {
-	fmt.Fprintf(w, `Usage:
-  switchd app create <name-or-host> --port <port>
-  switchd app rm <name>
-  switchd app ls
-  switchd app expose <name> [--provider <provider>] [--public-host <fqdn>]
-  switchd app up <name>
-  switchd app down <name>
-  switchd app oauth google enable <name> --callback-path <path>
-  switchd app oauth google print <name>
-`)
-}
-
-func printAppSubUsage(w io.Writer, sub string) {
-	switch strings.ToLower(strings.TrimSpace(sub)) {
-	case "create":
-		fmt.Fprintf(w, "Usage:\n  switchd app create <name-or-host> --port <port>\n")
-	case "rm":
-		fmt.Fprintf(w, "Usage:\n  switchd app rm <name>\n")
-	case "ls":
-		fmt.Fprintf(w, "Usage:\n  switchd app ls\n")
-	case "expose":
-		fmt.Fprintf(w, "Usage:\n  switchd app expose <name> [--provider <provider>] [--public-host <fqdn>]\n")
-	case "up":
-		fmt.Fprintf(w, "Usage:\n  switchd app up <name>\n")
-	case "down":
-		fmt.Fprintf(w, "Usage:\n  switchd app down <name>\n")
-	case "oauth":
-		fmt.Fprintf(w, `Usage:
-  switchd app oauth google enable <name> --callback-path <path>
-  switchd app oauth google print <name>
-`)
-	case "oauth-enable":
-		fmt.Fprintf(w, "Usage:\n  switchd app oauth google enable <name> --callback-path <path>\n")
-	case "oauth-print":
-		fmt.Fprintf(w, "Usage:\n  switchd app oauth google print <name>\n")
-	default:
-		printAppUsage(w)
+func (g globalFlags) useJSON() bool {
+	if g.JSON {
+		return true
 	}
+	return strings.EqualFold(strings.TrimSpace(g.Output), "json")
 }
 
-func printTunnelUsage(w io.Writer) {
-	fmt.Fprintf(w, `Usage:
-  switchd tunnel providers
-  switchd tunnel init --provider <provider> [--mode cli|api] [--setup] [--non-interactive] [--origincert <path>] [--account-id <id>] [--zone-id <id>] [--base-domain <domain>] [--api-token-env <ENV_NAME>]
-  switchd tunnel status [--provider <provider>]
-`)
+type CLI struct {
+	globalFlags
+
+	Init      InitCmd      `cmd:"" help:"Initialize switchd local DNS + Caddy setup."`
+	App       AppCmd       `cmd:"" help:"Manage app definitions and tunnel exposure."`
+	Tunnel    TunnelCmd    `cmd:"" help:"Manage tunnel providers."`
+	Add       AddCmd       `cmd:"" help:"Add a route."`
+	Rm        RmCmd        `cmd:"" help:"Remove a route."`
+	Ls        LsCmd        `cmd:"" help:"List routes."`
+	Apply     ApplyCmd     `cmd:"" help:"Apply config to Caddy admin API."`
+	TLS       TLSCmd       `cmd:"" name:"tls" help:"TLS helpers."`
+	Open      OpenCmd      `cmd:"" help:"Open app URL in browser."`
+	Uninstall UninstallCmd `cmd:"" help:"Uninstall switchd local setup."`
+	Status    StatusCmd    `cmd:"" help:"Show status diagnostics."`
+	Version   VersionCmd   `cmd:"" help:"Show build/version info."`
+	Caddy     CaddyCmd     `cmd:"" help:"Caddy control commands."`
+	Help      HelpCmd      `cmd:"" help:"Show help for a command path."`
 }
 
-func printTunnelSubUsage(w io.Writer, sub string) {
-	switch strings.ToLower(strings.TrimSpace(sub)) {
-	case "providers":
-		fmt.Fprintf(w, "Usage:\n  switchd tunnel providers\n")
-	case "init":
-		fmt.Fprintf(w, "Usage:\n  switchd tunnel init --provider <provider> [--mode cli|api] [--setup] [--non-interactive] [--origincert <path>] [--account-id <id>] [--zone-id <id>] [--base-domain <domain>] [--api-token-env <ENV_NAME>]\n")
-	case "status":
-		fmt.Fprintf(w, "Usage:\n  switchd tunnel status [--provider <provider>]\n")
-	default:
-		printTunnelUsage(w)
+type InitCmd struct {
+	TLD         string `name:"tld" default:"test" help:"Development TLD to manage."`
+	DNSIP       string `name:"dns-ip" default:"10.0.0.1" help:"Loopback alias IP for dnsmasq."`
+	TLS         bool   `name:"tls" default:"true" help:"Enable HTTPS listeners in Caddy."`
+	TLSMode     string `name:"tls-mode" default:"internal" enum:"internal,file" help:"TLS mode."`
+	TLSCertFile string `name:"tls-cert-file" help:"Certificate file path (PEM)."`
+	TLSKeyFile  string `name:"tls-key-file" help:"Key file path (PEM)."`
+}
+
+func (c *InitCmd) Run(r *runContext) error {
+	if err := app.Init(c.TLD, c.DNSIP, c.TLS, c.TLSMode, c.TLSCertFile, c.TLSKeyFile); err != nil {
+		return err
 	}
+	r.out.ok("Initialization complete", map[string]any{
+		"tld":    c.TLD,
+		"dns_ip": c.DNSIP,
+		"tls":    c.TLS,
+	})
+	return nil
 }
 
-func printHelp(args []string) {
-	if len(args) == 0 {
-		printRootUsage(os.Stdout)
-		return
+type AppCmd struct {
+	Create AppCreateCmd `cmd:"" help:"Create an app."`
+	Rm     AppRmCmd     `cmd:"" name:"rm" help:"Remove an app."`
+	Ls     AppLsCmd     `cmd:"" name:"ls" help:"List apps."`
+	Expose AppExposeCmd `cmd:"" help:"Expose app through tunnel provider."`
+	Up     AppUpCmd     `cmd:"" help:"Start app runtime and tunnel connector."`
+	Down   AppDownCmd   `cmd:"" help:"Stop app tunnel connector session."`
+	OAuth  AppOAuthCmd  `cmd:"" name:"oauth" help:"OAuth helpers."`
+}
+
+type AppCreateCmd struct {
+	NameOrHost string `arg:"" name:"name-or-host" help:"App name or host."`
+	Port       int    `name:"port" required:"" help:"Local port to proxy to."`
+}
+
+func (c *AppCreateCmd) Run(r *runContext) error {
+	if c.Port <= 0 || c.Port > 65535 {
+		return fmt.Errorf("--port must be 1..65535")
 	}
-	cmd := strings.ToLower(strings.TrimSpace(args[0]))
-	switch cmd {
-	case "app":
-		if len(args) == 1 {
-			printAppUsage(os.Stdout)
-			return
+	if err := app.CreateApp(c.NameOrHost, c.Port); err != nil {
+		return err
+	}
+	apps, err := app.ListApps()
+	if err == nil {
+		if created, ok := findAppByInput(apps, c.NameOrHost); ok {
+			r.out.ok("App created", map[string]any{
+				"app":   created.Name,
+				"local": created.LocalHost,
+				"port":  created.LocalPort,
+			})
+			return nil
 		}
-		if len(args) >= 3 && args[1] == "oauth" && args[2] == "google" {
-			if len(args) >= 4 {
-				printAppSubUsage(os.Stdout, "oauth-"+args[3])
-				return
+	}
+	r.out.ok("App created", map[string]any{"app": c.NameOrHost, "port": c.Port})
+	return nil
+}
+
+type AppRmCmd struct {
+	Name string `arg:"" name:"name" help:"App name."`
+}
+
+func (c *AppRmCmd) Run(r *runContext) error {
+	if err := app.RemoveApp(c.Name); err != nil {
+		return err
+	}
+	r.out.ok("App removed", map[string]any{"app": c.Name})
+	return nil
+}
+
+type AppLsCmd struct{}
+
+func (c *AppLsCmd) Run(r *runContext) error {
+	apps, err := app.ListApps()
+	if err != nil {
+		return err
+	}
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, map[string]any{"apps": apps, "count": len(apps)})
+		return nil
+	}
+	if len(apps) == 0 {
+		r.out.info("No apps configured", nil)
+		return nil
+	}
+	rows := make([][]string, 0, len(apps))
+	for _, a := range apps {
+		public := strings.TrimSpace(a.PublicEndpoint.Host)
+		if public == "" {
+			public = "-"
+		}
+		oauth := "off"
+		if a.OAuth.Google.Enabled {
+			oauth = "google"
+		}
+		rows = append(rows, []string{
+			a.Name,
+			a.LocalHost,
+			fmt.Sprintf("%d", a.LocalPort),
+			public,
+			oauth,
+			appSessionLabel(a),
+		})
+	}
+	r.out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, rows)
+	return nil
+}
+
+type AppExposeCmd struct {
+	Name       string `arg:"" name:"name" help:"App name."`
+	Provider   string `name:"provider" help:"Tunnel provider (defaults to config tunnels.default_provider)."`
+	PublicHost string `name:"public-host" help:"Public callback host."`
+}
+
+func (c *AppExposeCmd) Run(r *runContext) error {
+	if err := app.ExposeApp(c.Name, c.Provider, c.PublicHost); err != nil {
+		return err
+	}
+	apps, err := app.ListApps()
+	if err == nil {
+		if exposed, ok := findAppByInput(apps, c.Name); ok {
+			r.out.ok("Public endpoint configured", map[string]any{
+				"app":         exposed.Name,
+				"provider":    exposed.PublicEndpoint.Provider,
+				"public_host": exposed.PublicEndpoint.Host,
+				"endpoint_id": exposed.PublicEndpoint.EndpointID,
+			})
+			return nil
+		}
+	}
+	r.out.ok("Public endpoint configured", map[string]any{"app": c.Name})
+	return nil
+}
+
+type AppUpCmd struct {
+	Name string `arg:"" name:"name" help:"App name."`
+}
+
+func (c *AppUpCmd) Run(r *runContext) error {
+	if err := app.AppUp(c.Name); err != nil {
+		return err
+	}
+	apps, err := app.ListApps()
+	if err == nil {
+		if runtime, ok := findAppByInput(apps, c.Name); ok {
+			fields := map[string]any{
+				"app":         runtime.Name,
+				"local_url":   fmt.Sprintf("http://%s", runtime.LocalHost),
+				"public_host": runtime.PublicEndpoint.Host,
 			}
-			printAppSubUsage(os.Stdout, "oauth")
-			return
+			if strings.TrimSpace(runtime.PublicEndpoint.ActiveSessionID) != "" {
+				fields["session_id"] = runtime.PublicEndpoint.ActiveSessionID
+			}
+			r.out.ok("App runtime started", fields)
+			return nil
 		}
-		printAppSubUsage(os.Stdout, args[1])
-	case "tunnel":
-		if len(args) == 1 {
-			printTunnelUsage(os.Stdout)
-			return
-		}
-		printTunnelSubUsage(os.Stdout, args[1])
-	default:
-		printRootUsage(os.Stdout)
 	}
+	r.out.ok("App runtime started", map[string]any{"app": c.Name})
+	return nil
 }
 
-type boolFlag interface {
-	IsBoolFlag() bool
+type AppDownCmd struct {
+	Name string `arg:"" name:"name" help:"App name."`
 }
 
-// parseInterspersedFlags allows both:
-// - switchd add --port 3030 myapp
-// - switchd add myapp --port 3030
-func parseInterspersedFlags(fs *flag.FlagSet, args []string) ([]string, error) {
-	flagArgs := make([]string, 0, len(args))
-	posArgs := make([]string, 0, len(args))
+func (c *AppDownCmd) Run(r *runContext) error {
+	beforeApps, _ := app.ListApps()
+	before, _ := findAppByInput(beforeApps, c.Name)
+	if err := app.AppDown(c.Name); err != nil {
+		return err
+	}
+	afterApps, err := app.ListApps()
+	if err == nil {
+		if after, ok := findAppByInput(afterApps, c.Name); ok {
+			if strings.TrimSpace(before.PublicEndpoint.ActiveSessionID) == "" {
+				r.out.warn("App tunnel already stopped", map[string]any{"app": after.Name})
+				return nil
+			}
+			r.out.ok("App tunnel stopped", map[string]any{"app": after.Name, "public_host": after.PublicEndpoint.Host})
+			return nil
+		}
+	}
+	r.out.ok("App tunnel stopped", map[string]any{"app": c.Name})
+	return nil
+}
 
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--" {
-			posArgs = append(posArgs, args[i+1:]...)
-			break
-		}
-		if !strings.HasPrefix(a, "-") || a == "-" {
-			posArgs = append(posArgs, a)
-			continue
-		}
+type AppOAuthCmd struct {
+	Google AppOAuthGoogleCmd `cmd:"" name:"google" help:"Google OAuth helpers."`
+}
 
-		name := strings.TrimLeft(a, "-")
-		if eq := strings.Index(name, "="); eq >= 0 {
-			name = name[:eq]
+type AppOAuthGoogleCmd struct {
+	Enable AppOAuthGoogleEnableCmd `cmd:"" name:"enable" help:"Enable Google OAuth for an app."`
+	Print  AppOAuthGooglePrintCmd  `cmd:"" name:"print" help:"Print Google OAuth redirect URI details."`
+}
+
+type AppOAuthGoogleEnableCmd struct {
+	Name         string `arg:"" name:"name" help:"App name."`
+	CallbackPath string `name:"callback-path" required:"" help:"OAuth callback path (must start with /)."`
+}
+
+func (c *AppOAuthGoogleEnableCmd) Run(r *runContext) error {
+	if err := app.OAuthGoogleEnable(c.Name, c.CallbackPath); err != nil {
+		return err
+	}
+	apps, err := app.ListApps()
+	if err == nil {
+		if current, ok := findAppByInput(apps, c.Name); ok {
+			r.out.ok("Google OAuth enabled", map[string]any{
+				"app":           current.Name,
+				"callback_path": current.OAuth.Google.CallbackPath,
+				"redirect_uri":  current.OAuth.Google.RedirectURI,
+			})
+			return nil
 		}
-		f := fs.Lookup(name)
-		if f == nil {
-			if a == "-h" || a == "--help" {
-				flagArgs = append(flagArgs, a)
+	}
+	r.out.ok("Google OAuth enabled", map[string]any{"app": c.Name, "callback_path": c.CallbackPath})
+	return nil
+}
+
+type AppOAuthGooglePrintCmd struct {
+	Name string `arg:"" name:"name" help:"App name."`
+}
+
+func (c *AppOAuthGooglePrintCmd) Run(r *runContext) error {
+	block, err := app.OAuthGooglePrint(c.Name)
+	if err != nil {
+		return err
+	}
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, map[string]any{"app": c.Name, "output": block})
+		return nil
+	}
+	fmt.Println(block)
+	return nil
+}
+
+type TunnelCmd struct {
+	Providers TunnelProvidersCmd `cmd:"" name:"providers" help:"List available tunnel providers."`
+	Init      TunnelInitCmd      `cmd:"" name:"init" help:"Initialize tunnel provider."`
+	Status    TunnelStatusCmd    `cmd:"" name:"status" help:"Show tunnel provider health/status."`
+}
+
+type TunnelProvidersCmd struct{}
+
+func (c *TunnelProvidersCmd) Run(r *runContext) error {
+	providers := app.TunnelProviders()
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, map[string]any{"providers": providers, "count": len(providers)})
+		return nil
+	}
+	rows := make([][]string, 0, len(providers))
+	for _, p := range providers {
+		rows = append(rows, []string{p})
+	}
+	r.out.printTable([]string{"PROVIDER"}, rows)
+	return nil
+}
+
+type TunnelInitCmd struct {
+	Provider       string `name:"provider" required:"" help:"Provider name."`
+	Mode           string `name:"mode" help:"Cloudflare mode (cli or api)."`
+	Setup          bool   `name:"setup" help:"Attempt provider bootstrap if preflight fails."`
+	NonInteractive bool   `name:"non-interactive" help:"Disable interactive setup flow."`
+	OriginCert     string `name:"origincert" help:"Cloudflare origin cert path override."`
+	AccountID      string `name:"account-id" help:"Cloudflare account id (for mode=api)."`
+	ZoneID         string `name:"zone-id" help:"Cloudflare zone id (for mode=api)."`
+	BaseDomain     string `name:"base-domain" help:"Default public tunnel base domain, e.g. tnl.example.com."`
+	APITokenEnv    string `name:"api-token-env" help:"Env var holding Cloudflare API token."`
+}
+
+func (c *TunnelInitCmd) Run(r *runContext) error {
+	if err := app.TunnelInitWithOptions(c.Provider, app.TunnelInitOptions{
+		Setup:          c.Setup,
+		NonInteractive: c.NonInteractive,
+		OriginCert:     c.OriginCert,
+		Mode:           c.Mode,
+		AccountID:      c.AccountID,
+		ZoneID:         c.ZoneID,
+		BaseDomain:     c.BaseDomain,
+		APITokenEnv:    c.APITokenEnv,
+	}); err != nil {
+		return err
+	}
+	r.out.ok("Tunnel provider initialized", map[string]any{"provider": c.Provider, "mode": c.Mode, "base_domain": c.BaseDomain})
+	return nil
+}
+
+type TunnelStatusCmd struct {
+	Provider string `name:"provider" help:"Provider name (optional)."`
+}
+
+func (c *TunnelStatusCmd) Run(r *runContext) error {
+	statuses, err := app.TunnelStatus(c.Provider)
+	if err != nil {
+		return err
+	}
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, map[string]any{"providers": statuses, "count": len(statuses)})
+		return nil
+	}
+	rows := make([][]string, 0, len(statuses))
+	for _, st := range statuses {
+		status := "ok"
+		detail := "ready"
+		if !st.Available {
+			status = "error"
+			detail = st.Err
+		}
+		rows = append(rows, []string{st.Name, boolLabel(st.Enabled), boolLabel(st.OAuthSuitable), status, detail})
+	}
+	r.out.printTable([]string{"PROVIDER", "ENABLED", "OAUTH", "STATUS", "DETAIL"}, rows)
+	for _, st := range statuses {
+		for _, note := range st.Notes {
+			note = strings.TrimSpace(note)
+			if note == "" {
 				continue
 			}
-			return nil, fmt.Errorf("unknown flag: %s", a)
-		}
-
-		flagArgs = append(flagArgs, a)
-		if strings.Contains(a, "=") {
-			continue
-		}
-		if bf, ok := f.Value.(boolFlag); ok && bf.IsBoolFlag() {
-			continue
-		}
-		if i+1 >= len(args) {
-			return nil, fmt.Errorf("flag needs a value: %s", a)
-		}
-		i++
-		flagArgs = append(flagArgs, args[i])
-	}
-
-	if err := fs.Parse(flagArgs); err != nil {
-		return nil, err
-	}
-	return append(fs.Args(), posArgs...), nil
-}
-
-type globalOptions struct {
-	Debug   bool
-	Verbose bool
-	Quiet   bool
-	JSON    bool
-}
-
-func extractGlobalFlags(args []string) ([]string, globalOptions, error) {
-	out := make([]string, 0, len(args))
-	opts := globalOptions{}
-
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--debug" || a == "-debug":
-			opts.Debug = true
-		case a == "--verbose" || a == "-v":
-			opts.Verbose = true
-		case a == "--quiet" || a == "-q":
-			opts.Quiet = true
-		case a == "--json":
-			opts.JSON = true
-		case a == "--output":
-			if i+1 >= len(args) {
-				return nil, opts, fmt.Errorf("--output requires a value: text or json")
-			}
-			i++
-			if err := applyOutputMode(&opts, args[i]); err != nil {
-				return nil, opts, err
-			}
-		case strings.HasPrefix(a, "--output="):
-			if err := applyOutputMode(&opts, strings.TrimPrefix(a, "--output=")); err != nil {
-				return nil, opts, err
-			}
-		default:
-			out = append(out, a)
+			r.out.info("provider note", map[string]any{"provider": st.Name, "note": note})
 		}
 	}
-	return out, opts, nil
+	return nil
 }
 
-func applyOutputMode(opts *globalOptions, mode string) error {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	switch mode {
-	case "text", "":
-		opts.JSON = false
+type AddCmd struct {
+	NameOrHost string `arg:"" optional:"" name:"name-or-host" help:"Route name or host."`
+	Port       int    `name:"port" required:"" help:"Local port to proxy to."`
+	Host       string `name:"host" help:"Explicit host (mutually exclusive with positional arg)."`
+}
+
+func (c *AddCmd) Run(r *runContext) error {
+	if c.Port <= 0 || c.Port > 65535 {
+		return fmt.Errorf("--port must be 1..65535")
+	}
+	if strings.TrimSpace(c.Host) == "" && strings.TrimSpace(c.NameOrHost) == "" {
+		return fmt.Errorf("provide <name-or-host> or --host")
+	}
+	if strings.TrimSpace(c.Host) != "" && strings.TrimSpace(c.NameOrHost) != "" {
+		return fmt.Errorf("use either positional <name-or-host> or --host, not both")
+	}
+	nameOrHost := strings.TrimSpace(c.Host)
+	if nameOrHost == "" {
+		nameOrHost = strings.TrimSpace(c.NameOrHost)
+	}
+	if err := app.AddRoute(nameOrHost, c.Port); err != nil {
+		return err
+	}
+	r.out.ok("Route added", map[string]any{"host": nameOrHost, "port": c.Port})
+	return nil
+}
+
+type RmCmd struct {
+	NameOrHost string `arg:"" name:"name-or-host" help:"Route name or host."`
+}
+
+func (c *RmCmd) Run(r *runContext) error {
+	target := strings.TrimSpace(c.NameOrHost)
+	if target == "" {
+		return fmt.Errorf("empty target")
+	}
+	if err := app.RemoveRoute(target); err != nil {
+		return err
+	}
+	r.out.ok("Route removed", map[string]any{"host": target})
+	return nil
+}
+
+type LsCmd struct{}
+
+func (c *LsCmd) Run(r *runContext) error {
+	if r.out.opts.JSON {
+		return fmt.Errorf("JSON output is not supported for this command yet")
+	}
+	return app.ListRoutes()
+}
+
+type ApplyCmd struct{}
+
+func (c *ApplyCmd) Run(r *runContext) error {
+	if err := app.Apply(); err != nil {
+		return err
+	}
+	r.out.ok("Configuration applied to Caddy", nil)
+	return nil
+}
+
+type TLSCmd struct {
+	Mkcert TLSMkcertCmd `cmd:"" name:"mkcert" help:"Generate local TLS cert/key with mkcert."`
+}
+
+type TLSMkcertCmd struct {
+	Install  bool   `name:"install" help:"Run mkcert -install before generating certs."`
+	CertFile string `name:"cert-file" help:"Output certificate file path."`
+	KeyFile  string `name:"key-file" help:"Output key file path."`
+}
+
+func (c *TLSMkcertCmd) Run(_ *runContext) error {
+	return app.TLSMkcert(c.CertFile, c.KeyFile, c.Install)
+}
+
+type OpenCmd struct {
+	NameOrHost string `arg:"" name:"name-or-host" help:"Route name or host."`
+	Scheme     string `name:"scheme" help:"URL scheme (http or https)."`
+}
+
+func (c *OpenCmd) Run(_ *runContext) error {
+	return app.Open(c.NameOrHost, c.Scheme)
+}
+
+type UninstallCmd struct{}
+
+func (c *UninstallCmd) Run(r *runContext) error {
+	if err := app.Uninstall(); err != nil {
+		return err
+	}
+	r.out.ok("Uninstall complete", nil)
+	return nil
+}
+
+type StatusCmd struct{}
+
+func (c *StatusCmd) Run(r *runContext) error {
+	if r.out.opts.JSON {
+		return fmt.Errorf("JSON output is not supported for this command yet")
+	}
+	return app.Status()
+}
+
+type CaddyCmd struct {
+	Run CaddyRunCmd `cmd:"" name:"run" help:"Run Caddy foreground process."`
+}
+
+type VersionCmd struct{}
+
+func (c *VersionCmd) Run(r *runContext) error {
+	info := map[string]any{
+		"version":    strings.TrimSpace(version),
+		"git_tag":    strings.TrimSpace(gitTag),
+		"commit":     strings.TrimSpace(commit),
+		"build_date": strings.TrimSpace(buildDate),
+		"build_tags": strings.TrimSpace(buildTags),
+		"go_version": runtime.Version(),
+	}
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, info)
 		return nil
-	case "json":
-		opts.JSON = true
+	}
+	fmt.Printf("version:    %s\n", info["version"])
+	if gt := fmt.Sprint(info["git_tag"]); gt != "" {
+		fmt.Printf("tag:        %s\n", gt)
+	}
+	fmt.Printf("commit:     %s\n", info["commit"])
+	fmt.Printf("build date: %s\n", info["build_date"])
+	if bt := fmt.Sprint(info["build_tags"]); bt != "" {
+		fmt.Printf("build tags: %s\n", bt)
+	}
+	fmt.Printf("go:         %s\n", info["go_version"])
+	return nil
+}
+
+type CaddyRunCmd struct{}
+
+func (c *CaddyRunCmd) Run(_ *runContext) error {
+	return app.CaddyRun()
+}
+
+type HelpCmd struct {
+	Path []string `arg:"" optional:"" help:"Command path to show help for."`
+}
+
+func (c *HelpCmd) Run(r *runContext) error {
+	if r.parser == nil {
 		return nil
-	default:
-		return fmt.Errorf("invalid --output value %q (expected text or json)", mode)
 	}
-}
-
-func isHelpToken(s string) bool {
-	s = strings.TrimSpace(strings.ToLower(s))
-	return s == "-h" || s == "--help" || s == "help"
-}
-
-func hasHelpToken(args []string) bool {
-	for _, a := range args {
-		if isHelpToken(a) {
-			return true
-		}
+	args := append([]string{}, c.Path...)
+	args = append(args, "--help")
+	ctx, err := r.parser.Parse(args)
+	if err != nil {
+		return err
 	}
-	return false
+	return ctx.PrintUsage(false)
 }
 
-func newFlagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	return fs
+type outputOptions struct {
+	Quiet bool
+	JSON  bool
 }
 
 type cliOutput struct {
-	opts globalOptions
+	opts outputOptions
 }
 
 func (o cliOutput) jsonOut(w io.Writer, payload any) {
@@ -355,15 +613,12 @@ func (o cliOutput) warn(msg string, fields map[string]any) {
 	o.textEvent(os.Stdout, "WARN", msg, fields)
 }
 
-func (o cliOutput) usageError(message string) {
-	if o.opts.JSON {
-		o.jsonOut(os.Stderr, map[string]any{"ok": false, "error": message, "kind": "usage"})
-		return
-	}
-	fmt.Fprintf(os.Stderr, "[ERR] %s\n", message)
-}
-
 func (o cliOutput) commandError(command string, err error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = "switchd"
+	}
+
 	if o.opts.JSON {
 		payload := map[string]any{
 			"ok":      false,
@@ -455,6 +710,11 @@ func (o cliOutput) printTable(headers []string, rows [][]string) {
 	}
 }
 
+type runContext struct {
+	parser *kong.Kong
+	out    cliOutput
+}
+
 func findAppByInput(apps []config.App, raw string) (config.App, bool) {
 	needle := strings.ToLower(strings.TrimSpace(raw))
 	needle = strings.TrimSuffix(needle, ".")
@@ -489,608 +749,40 @@ func appSessionLabel(a config.App) string {
 }
 
 func main() {
-	rawArgs, opts, err := extractGlobalFlags(os.Args[1:])
+	cli := CLI{}
+	parser, err := kong.New(
+		&cli,
+		kong.Name("switchd"),
+		kong.Description("manage *.test local DNS + Caddy routes (switchboard-hub)"),
+		kong.UsageOnError(),
+	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "switchd error:", err)
-		os.Exit(2)
-	}
-	diag.SetDebug(opts.Debug || opts.Verbose)
-	out := cliOutput{opts: opts}
-
-	if len(rawArgs) < 1 {
-		usage()
-		os.Exit(2)
+		os.Exit(1)
 	}
 
-	if isHelpToken(rawArgs[0]) {
-		printHelp(rawArgs[1:])
+	args := os.Args[1:]
+	if len(args) == 0 {
+		args = []string{"--help"}
+	}
+
+	ctx, err := parser.Parse(args)
+	if err != nil {
+		parser.FatalIfErrorf(err)
 		return
 	}
 
-	cmd := rawArgs[0]
-	args := rawArgs[1:]
+	diag.SetDebug(cli.Debug || cli.Verbose)
+	rc := &runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			Quiet: cli.Quiet,
+			JSON:  cli.useJSON(),
+		}},
+	}
 
-	switch cmd {
-	case "help":
-		printHelp(args)
-		return
-
-	case "init":
-		if hasHelpToken(args) {
-			printRootUsage(os.Stdout)
-			return
-		}
-		fs := newFlagSet("init")
-		tld := fs.String("tld", "test", "development TLD to manage (e.g. test)")
-		dnsIP := fs.String("dns-ip", "10.0.0.1", "loopback alias IP for dnsmasq (e.g. 10.0.0.1)")
-		tlsEnabled := fs.Bool("tls", true, "enable HTTPS listeners in Caddy")
-		tlsMode := fs.String("tls-mode", "", "TLS mode: internal or file (default: internal)")
-		tlsCertFile := fs.String("tls-cert-file", "", "certificate file path (PEM), required when --tls-mode file")
-		tlsKeyFile := fs.String("tls-key-file", "", "key file path (PEM), required when --tls-mode file")
-		if err := fs.Parse(args); err != nil {
-			out.usageError("init: " + err.Error())
-			os.Exit(2)
-		}
-
-		if err := app.Init(*tld, *dnsIP, *tlsEnabled, *tlsMode, *tlsCertFile, *tlsKeyFile); err != nil {
-			out.commandError("init", err)
-			os.Exit(1)
-		}
-		out.ok("Initialization complete", map[string]any{"tld": *tld, "dns_ip": *dnsIP, "tls": *tlsEnabled})
-
-	case "app":
-		if len(args) < 1 || isHelpToken(args[0]) {
-			printAppUsage(os.Stdout)
-			return
-		}
-		sub := args[0]
-		switch sub {
-		case "create":
-			if hasHelpToken(args[1:]) {
-				printAppSubUsage(os.Stdout, "create")
-				return
-			}
-			fs := newFlagSet("app create")
-			port := fs.Int("port", 0, "local port to proxy to (required)")
-			pos, err := parseInterspersedFlags(fs, args[1:])
-			if err != nil {
-				out.usageError("app create: " + err.Error())
-				os.Exit(2)
-			}
-			if *port <= 0 || *port > 65535 {
-				out.usageError("app create: --port is required and must be 1..65535")
-				os.Exit(2)
-			}
-			if len(pos) != 1 {
-				out.usageError("app create: provide exactly one <name-or-host>")
-				os.Exit(2)
-			}
-			if err := app.CreateApp(pos[0], *port); err != nil {
-				out.commandError("app create", err)
-				os.Exit(1)
-			}
-			apps, _ := app.ListApps()
-			created, ok := findAppByInput(apps, pos[0])
-			if ok {
-				out.ok("App created", map[string]any{
-					"app":   created.Name,
-					"local": created.LocalHost,
-					"port":  created.LocalPort,
-				})
-				return
-			}
-			out.ok("App created", map[string]any{"app": pos[0], "port": *port})
-
-		case "rm":
-			if hasHelpToken(args[1:]) {
-				printAppSubUsage(os.Stdout, "rm")
-				return
-			}
-			if len(args) != 2 {
-				out.usageError("app rm: provide exactly one <name>")
-				os.Exit(2)
-			}
-			if err := app.RemoveApp(args[1]); err != nil {
-				out.commandError("app rm", err)
-				os.Exit(1)
-			}
-			out.ok("App removed", map[string]any{"app": args[1]})
-
-		case "ls":
-			if hasHelpToken(args[1:]) {
-				printAppSubUsage(os.Stdout, "ls")
-				return
-			}
-			apps, err := app.ListApps()
-			if err != nil {
-				out.commandError("app ls", err)
-				os.Exit(1)
-			}
-			if out.opts.JSON {
-				out.jsonOut(os.Stdout, map[string]any{"apps": apps, "count": len(apps)})
-				return
-			}
-			if len(apps) == 0 {
-				out.info("No apps configured", nil)
-				return
-			}
-			rows := make([][]string, 0, len(apps))
-			for _, a := range apps {
-				public := strings.TrimSpace(a.PublicEndpoint.Host)
-				if public == "" {
-					public = "-"
-				}
-				oauth := "off"
-				if a.OAuth.Google.Enabled {
-					oauth = "google"
-				}
-				rows = append(rows, []string{
-					a.Name,
-					a.LocalHost,
-					fmt.Sprintf("%d", a.LocalPort),
-					public,
-					oauth,
-					appSessionLabel(a),
-				})
-			}
-			out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, rows)
-
-		case "expose":
-			if hasHelpToken(args[1:]) {
-				printAppSubUsage(os.Stdout, "expose")
-				return
-			}
-			fs := newFlagSet("app expose")
-			provider := fs.String("provider", "", "tunnel provider (defaults to config tunnels.default_provider)")
-			publicHost := fs.String("public-host", "", "public callback host (optional for cloudflare with base_domain configured)")
-			pos, err := parseInterspersedFlags(fs, args[1:])
-			if err != nil {
-				out.usageError("app expose: " + err.Error())
-				os.Exit(2)
-			}
-			if len(pos) != 1 {
-				out.usageError("app expose: provide exactly one <name>")
-				os.Exit(2)
-			}
-			if err := app.ExposeApp(pos[0], *provider, *publicHost); err != nil {
-				out.commandError("app expose", err)
-				os.Exit(1)
-			}
-			apps, _ := app.ListApps()
-			exposed, ok := findAppByInput(apps, pos[0])
-			if ok {
-				out.ok("Public endpoint configured", map[string]any{
-					"app":         exposed.Name,
-					"provider":    exposed.PublicEndpoint.Provider,
-					"public_host": exposed.PublicEndpoint.Host,
-					"endpoint_id": exposed.PublicEndpoint.EndpointID,
-				})
-				return
-			}
-			out.ok("Public endpoint configured", map[string]any{"app": pos[0]})
-
-		case "up":
-			if hasHelpToken(args[1:]) {
-				printAppSubUsage(os.Stdout, "up")
-				return
-			}
-			if len(args) != 2 {
-				out.usageError("app up: provide exactly one <name>")
-				os.Exit(2)
-			}
-			if err := app.AppUp(args[1]); err != nil {
-				out.commandError("app up", err)
-				os.Exit(1)
-			}
-			apps, _ := app.ListApps()
-			runtime, ok := findAppByInput(apps, args[1])
-			if ok {
-				fields := map[string]any{
-					"app":         runtime.Name,
-					"local_url":   fmt.Sprintf("http://%s", runtime.LocalHost),
-					"public_host": runtime.PublicEndpoint.Host,
-				}
-				if strings.TrimSpace(runtime.PublicEndpoint.ActiveSessionID) != "" {
-					fields["session_id"] = runtime.PublicEndpoint.ActiveSessionID
-				}
-				out.ok("App runtime started", fields)
-				return
-			}
-			out.ok("App runtime started", map[string]any{"app": args[1]})
-
-		case "down":
-			if hasHelpToken(args[1:]) {
-				printAppSubUsage(os.Stdout, "down")
-				return
-			}
-			if len(args) != 2 {
-				out.usageError("app down: provide exactly one <name>")
-				os.Exit(2)
-			}
-			beforeApps, _ := app.ListApps()
-			before, _ := findAppByInput(beforeApps, args[1])
-			if err := app.AppDown(args[1]); err != nil {
-				out.commandError("app down", err)
-				os.Exit(1)
-			}
-			afterApps, _ := app.ListApps()
-			after, ok := findAppByInput(afterApps, args[1])
-			if ok {
-				if strings.TrimSpace(before.PublicEndpoint.ActiveSessionID) == "" {
-					out.warn("App tunnel already stopped", map[string]any{"app": after.Name})
-					return
-				}
-				out.ok("App tunnel stopped", map[string]any{"app": after.Name, "public_host": after.PublicEndpoint.Host})
-				return
-			}
-			out.ok("App tunnel stopped", map[string]any{"app": args[1]})
-
-		case "oauth":
-			if len(args) < 2 || isHelpToken(args[1]) {
-				printAppSubUsage(os.Stdout, "oauth")
-				return
-			}
-			if args[1] != "google" {
-				out.usageError("app oauth: unknown provider " + args[1])
-				os.Exit(2)
-			}
-			if len(args) < 3 || isHelpToken(args[2]) {
-				printAppSubUsage(os.Stdout, "oauth")
-				return
-			}
-			switch args[2] {
-			case "enable":
-				if hasHelpToken(args[3:]) {
-					printAppSubUsage(os.Stdout, "oauth-enable")
-					return
-				}
-				fs := newFlagSet("app oauth google enable")
-				callbackPath := fs.String("callback-path", "", "oauth callback path (required, must start with /)")
-				pos, err := parseInterspersedFlags(fs, args[3:])
-				if err != nil {
-					out.usageError("app oauth google enable: " + err.Error())
-					os.Exit(2)
-				}
-				if len(pos) != 1 {
-					out.usageError("app oauth google enable: provide exactly one <name>")
-					os.Exit(2)
-				}
-				if strings.TrimSpace(*callbackPath) == "" {
-					out.usageError("app oauth google enable: --callback-path is required")
-					os.Exit(2)
-				}
-				if err := app.OAuthGoogleEnable(pos[0], *callbackPath); err != nil {
-					out.commandError("app oauth google enable", err)
-					os.Exit(1)
-				}
-				apps, _ := app.ListApps()
-				current, ok := findAppByInput(apps, pos[0])
-				if ok {
-					out.ok("Google OAuth enabled", map[string]any{
-						"app":           current.Name,
-						"callback_path": current.OAuth.Google.CallbackPath,
-						"redirect_uri":  current.OAuth.Google.RedirectURI,
-					})
-					return
-				}
-				out.ok("Google OAuth enabled", map[string]any{"app": pos[0], "callback_path": *callbackPath})
-
-			case "print":
-				if hasHelpToken(args[3:]) {
-					printAppSubUsage(os.Stdout, "oauth-print")
-					return
-				}
-				if len(args) != 4 {
-					out.usageError("app oauth google print: provide exactly one <name>")
-					os.Exit(2)
-				}
-				block, err := app.OAuthGooglePrint(args[3])
-				if err != nil {
-					out.commandError("app oauth google print", err)
-					os.Exit(1)
-				}
-				if out.opts.JSON {
-					out.jsonOut(os.Stdout, map[string]any{"app": args[3], "output": block})
-					return
-				}
-				fmt.Println(block)
-
-			default:
-				out.usageError("app oauth google: unknown subcommand " + args[2])
-				os.Exit(2)
-			}
-
-		default:
-			out.usageError("app: unknown subcommand " + sub)
-			os.Exit(2)
-		}
-
-	case "tunnel":
-		if len(args) < 1 || isHelpToken(args[0]) {
-			printTunnelUsage(os.Stdout)
-			return
-		}
-		sub := args[0]
-		switch sub {
-		case "providers":
-			if hasHelpToken(args[1:]) {
-				printTunnelSubUsage(os.Stdout, "providers")
-				return
-			}
-			providers := app.TunnelProviders()
-			if out.opts.JSON {
-				out.jsonOut(os.Stdout, map[string]any{"providers": providers, "count": len(providers)})
-				return
-			}
-			rows := make([][]string, 0, len(providers))
-			for _, p := range providers {
-				rows = append(rows, []string{p})
-			}
-			out.printTable([]string{"PROVIDER"}, rows)
-
-		case "init":
-			if hasHelpToken(args[1:]) {
-				printTunnelSubUsage(os.Stdout, "init")
-				return
-			}
-			fs := newFlagSet("tunnel init")
-			provider := fs.String("provider", "", "provider name (required)")
-			mode := fs.String("mode", "", "cloudflare mode: cli or api")
-			setup := fs.Bool("setup", false, "attempt provider bootstrap if preflight fails (cloudflare: runs `cloudflared tunnel login`)")
-			nonInteractive := fs.Bool("non-interactive", false, "disable interactive setup flow")
-			originCert := fs.String("origincert", "", "cloudflare origin cert path override")
-			accountID := fs.String("account-id", "", "cloudflare account id (for mode=api)")
-			zoneID := fs.String("zone-id", "", "cloudflare zone id (for mode=api)")
-			baseDomain := fs.String("base-domain", "", "default public tunnel base domain, e.g. tnl.example.com")
-			apiTokenEnv := fs.String("api-token-env", "", "env var holding cloudflare api token (default: SWITCHD_CF_API_TOKEN)")
-			if err := fs.Parse(args[1:]); err != nil {
-				out.usageError("tunnel init: " + err.Error())
-				os.Exit(2)
-			}
-			if strings.TrimSpace(*provider) == "" {
-				out.usageError("tunnel init: --provider is required")
-				os.Exit(2)
-			}
-			if err := app.TunnelInitWithOptions(*provider, app.TunnelInitOptions{
-				Setup:          *setup,
-				NonInteractive: *nonInteractive,
-				OriginCert:     *originCert,
-				Mode:           *mode,
-				AccountID:      *accountID,
-				ZoneID:         *zoneID,
-				BaseDomain:     *baseDomain,
-				APITokenEnv:    *apiTokenEnv,
-			}); err != nil {
-				out.commandError("tunnel init", err)
-				os.Exit(1)
-			}
-			out.ok("Tunnel provider initialized", map[string]any{"provider": *provider, "mode": *mode, "base_domain": *baseDomain})
-
-		case "status":
-			if hasHelpToken(args[1:]) {
-				printTunnelSubUsage(os.Stdout, "status")
-				return
-			}
-			fs := newFlagSet("tunnel status")
-			provider := fs.String("provider", "", "provider name (optional)")
-			if err := fs.Parse(args[1:]); err != nil {
-				out.usageError("tunnel status: " + err.Error())
-				os.Exit(2)
-			}
-			statuses, err := app.TunnelStatus(*provider)
-			if err != nil {
-				out.commandError("tunnel status", err)
-				os.Exit(1)
-			}
-			if out.opts.JSON {
-				out.jsonOut(os.Stdout, map[string]any{"providers": statuses, "count": len(statuses)})
-				return
-			}
-			rows := make([][]string, 0, len(statuses))
-			for _, st := range statuses {
-				status := "ok"
-				detail := "ready"
-				if !st.Available {
-					status = "error"
-					detail = st.Err
-				}
-				rows = append(rows, []string{st.Name, boolLabel(st.Enabled), boolLabel(st.OAuthSuitable), status, detail})
-			}
-			out.printTable([]string{"PROVIDER", "ENABLED", "OAUTH", "STATUS", "DETAIL"}, rows)
-			for _, st := range statuses {
-				for _, note := range st.Notes {
-					note = strings.TrimSpace(note)
-					if note == "" {
-						continue
-					}
-					out.info("provider note", map[string]any{"provider": st.Name, "note": note})
-				}
-			}
-
-		default:
-			out.usageError("tunnel: unknown subcommand " + sub)
-			os.Exit(2)
-		}
-
-	case "add":
-		if hasHelpToken(args) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd add <name-or-host> --port <port>")
-			return
-		}
-		fs := newFlagSet("add")
-		port := fs.Int("port", 0, "local port to proxy to (required)")
-		host := fs.String("host", "", "explicit host (overrides positional argument)")
-		pos, err := parseInterspersedFlags(fs, args)
-		if err != nil {
-			out.usageError("add: " + err.Error())
-			os.Exit(2)
-		}
-		if *port <= 0 || *port > 65535 {
-			out.usageError("add: --port is required and must be 1..65535")
-			os.Exit(2)
-		}
-		if len(pos) < 1 && *host == "" {
-			out.usageError("add: provide <name-or-host> or --host")
-			os.Exit(2)
-		}
-		if *host != "" && len(pos) > 0 {
-			out.usageError("add: use either positional <name-or-host> or --host, not both")
-			os.Exit(2)
-		}
-		if *host == "" && len(pos) != 1 {
-			out.usageError("add: provide exactly one <name-or-host>")
-			os.Exit(2)
-		}
-		nameOrHost := *host
-		if nameOrHost == "" {
-			nameOrHost = pos[0]
-		}
-		if err := app.AddRoute(nameOrHost, *port); err != nil {
-			out.commandError("add", err)
-			os.Exit(1)
-		}
-		out.ok("Route added", map[string]any{"host": nameOrHost, "port": *port})
-
-	case "rm":
-		if hasHelpToken(args) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd rm <name-or-host>")
-			return
-		}
-		if len(args) != 1 {
-			out.usageError("rm: provide exactly one <name-or-host>")
-			os.Exit(2)
-		}
-		target := strings.TrimSpace(args[0])
-		if target == "" {
-			out.usageError("rm: empty target")
-			os.Exit(2)
-		}
-		if err := app.RemoveRoute(target); err != nil {
-			out.commandError("rm", err)
-			os.Exit(1)
-		}
-		out.ok("Route removed", map[string]any{"host": target})
-
-	case "ls":
-		if hasHelpToken(args) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd ls")
-			return
-		}
-		if out.opts.JSON {
-			out.usageError("ls: JSON output is not supported for this command yet")
-			os.Exit(2)
-		}
-		if err := app.ListRoutes(); err != nil {
-			out.commandError("ls", err)
-			os.Exit(1)
-		}
-
-	case "apply":
-		if hasHelpToken(args) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd apply")
-			return
-		}
-		if err := app.Apply(); err != nil {
-			out.commandError("apply", err)
-			os.Exit(1)
-		}
-		out.ok("Configuration applied to Caddy", nil)
-
-	case "tls":
-		if len(args) < 1 || isHelpToken(args[0]) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd tls mkcert [--install] [--cert-file <path>] [--key-file <path>]")
-			return
-		}
-		sub := args[0]
-		switch sub {
-		case "mkcert":
-			if hasHelpToken(args[1:]) {
-				fmt.Fprintln(os.Stdout, "Usage:\n  switchd tls mkcert [--install] [--cert-file <path>] [--key-file <path>]")
-				return
-			}
-			fs := newFlagSet("tls mkcert")
-			install := fs.Bool("install", false, "run mkcert -install before generating certs")
-			certFile := fs.String("cert-file", "", "output certificate file path (default: ~/.config/switchboard-hub/tls-cert.pem)")
-			keyFile := fs.String("key-file", "", "output key file path (default: ~/.config/switchboard-hub/tls-key.pem)")
-			if err := fs.Parse(args[1:]); err != nil {
-				out.usageError("tls mkcert: " + err.Error())
-				os.Exit(2)
-			}
-			if err := app.TLSMkcert(*certFile, *keyFile, *install); err != nil {
-				out.commandError("tls mkcert", err)
-				os.Exit(1)
-			}
-		default:
-			out.usageError("tls: unknown subcommand " + sub)
-			os.Exit(2)
-		}
-
-	case "open":
-		if hasHelpToken(args) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd open <name-or-host> [--scheme http|https]")
-			return
-		}
-		fs := newFlagSet("open")
-		scheme := fs.String("scheme", "", "URL scheme (http or https; defaults to https when TLS is enabled)")
-		pos, err := parseInterspersedFlags(fs, args)
-		if err != nil {
-			out.usageError("open: " + err.Error())
-			os.Exit(2)
-		}
-		if len(pos) != 1 {
-			out.usageError("open: provide exactly one <name-or-host>")
-			os.Exit(2)
-		}
-		if err := app.Open(pos[0], *scheme); err != nil {
-			out.commandError("open", err)
-			os.Exit(1)
-		}
-
-	case "uninstall":
-		if hasHelpToken(args) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd uninstall")
-			return
-		}
-		if err := app.Uninstall(); err != nil {
-			out.commandError("uninstall", err)
-			os.Exit(1)
-		}
-		out.ok("Uninstall complete", nil)
-
-	case "status":
-		if hasHelpToken(args) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd status")
-			return
-		}
-		if out.opts.JSON {
-			out.usageError("status: JSON output is not supported for this command yet")
-			os.Exit(2)
-		}
-		if err := app.Status(); err != nil {
-			out.commandError("status", err)
-			os.Exit(1)
-		}
-
-	case "caddy":
-		if len(args) < 1 || isHelpToken(args[0]) {
-			fmt.Fprintln(os.Stdout, "Usage:\n  switchd caddy run")
-			return
-		}
-		sub := args[0]
-		switch sub {
-		case "run":
-			if err := app.CaddyRun(); err != nil {
-				out.commandError("caddy run", err)
-				os.Exit(1)
-			}
-		default:
-			out.usageError("caddy: unknown subcommand " + sub)
-			os.Exit(2)
-		}
-
-	default:
-		out.usageError("unknown command: " + cmd)
-		usage()
-		os.Exit(2)
+	if err := ctx.Run(rc); err != nil {
+		rc.out.commandError(ctx.Command(), err)
+		os.Exit(1)
 	}
 }
