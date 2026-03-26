@@ -8,7 +8,7 @@ fi
 export LGR_NO_TIMESTAMP=true
 
 GIT_MAIN="main"
-BINAME=switchd
+BINAME="switchd"
 VERSION_FILE="./.version"
 
 # Get the directory where this script is located
@@ -196,23 +196,39 @@ function go:build:versioned {
 ## Install ts binary to /usr/local/bin (requires sudo)
 ##
 function install:local {
-    lgr I "Installing ts to /usr/local/bin..."
+    local build_path="./bin/$BINAME"
+    local install_path="/usr/local/bin/$BINAME"
+
+    lgr I "Installing $BINAME to /usr/local/bin..."
 
     # Build the binary first
-    go:build ./bin/$BINAME
-
-    if [ $? -eq 0 ]; then
-        sudo cp ./bin/$BINAME /usr/local/bin/$BINAME
-        sudo chmod +x /usr/local/bin/$BINAME
-        lgr OK "$BINAME installed to /usr/local/bin"
-
-        # Verify installation
-        if command -v $BINAME &> /dev/null; then
-            lgr I "Installation verified - $BINAME is available globally"
-            $BINAME version
-        fi
-    else
+    go:build "$build_path"
+    if [ $? -ne 0 ]; then
         lgr E "Build failed, installation aborted"
+        return 1
+    fi
+
+    if ! sudo install -m 0755 "$build_path" "$install_path"; then
+        lgr E "Install failed - could not write $install_path"
+        return 1
+    fi
+
+    lgr OK "$BINAME installed to /usr/local/bin"
+
+    # Verify installation and print version metadata from installed binary
+    if [ ! -x "$install_path" ]; then
+        lgr E "Installation failed - $install_path is missing or not executable"
+        return 1
+    fi
+
+    if ! command -v "$BINAME" &> /dev/null; then
+        lgr E "Installation failed - $BINAME not found in PATH"
+        return 1
+    fi
+
+    lgr I "Installation verified - $BINAME is available globally"
+    if ! "$install_path" version; then
+        lgr E "Installation failed - could not execute $install_path"
         return 1
     fi
 }
