@@ -70,7 +70,7 @@ Or plain Go build:
 go build -o switchd ./cmd/switchd
 ```
 
-## First-time setup (machine)
+## First time setup (machine)
 
 Run once with `sudo`:
 
@@ -158,8 +158,8 @@ Expose app publicly:
 Configure Google callback path:
 
 ```bash
-./build/switchd app oauth google enable esign --callback-path /oauth/callback
-./build/switchd app oauth google print esign
+./build/switchd app oauth enable esign --provider google --callback-path /oauth/callback
+./build/switchd app oauth print esign --provider google
 ```
 
 Start tunnel runtime for the app:
@@ -195,7 +195,7 @@ Main commands:
 - `init`
 - `add`, `rm`, `ls`, `apply`, `open`
 - `app create|rm|ls|expose|up|down`
-- `app oauth google enable|print`
+- `app oauth enable|print --provider <provider>`
 - `tunnel providers|init|status`
 - `tls mkcert`
 - `status`
