@@ -245,49 +245,71 @@ func (c *AppDownCmd) Run(r *runContext) error {
 }
 
 type AppOAuthCmd struct {
-	Google AppOAuthGoogleCmd `cmd:"" name:"google" help:"Google OAuth helpers."`
+	Enable AppOAuthEnableCmd `cmd:"" name:"enable" help:"Enable OAuth for an app."`
+	Print  AppOAuthPrintCmd  `cmd:"" name:"print" help:"Print OAuth redirect URI details for an app."`
 }
 
-type AppOAuthGoogleCmd struct {
-	Enable AppOAuthGoogleEnableCmd `cmd:"" name:"enable" help:"Enable Google OAuth for an app."`
-	Print  AppOAuthGooglePrintCmd  `cmd:"" name:"print" help:"Print Google OAuth redirect URI details."`
-}
-
-type AppOAuthGoogleEnableCmd struct {
+type AppOAuthEnableCmd struct {
 	Name         string `arg:"" name:"name" help:"App name."`
+	Provider     string `name:"provider" required:"" enum:"google" help:"OAuth provider name."`
 	CallbackPath string `name:"callback-path" required:"" help:"OAuth callback path (must start with /)."`
 }
 
-func (c *AppOAuthGoogleEnableCmd) Run(r *runContext) error {
-	if err := app.OAuthGoogleEnable(c.Name, c.CallbackPath); err != nil {
-		return err
+func (c *AppOAuthEnableCmd) Run(r *runContext) error {
+	switch c.Provider {
+	case "google":
+		if err := app.OAuthGoogleEnable(c.Name, c.CallbackPath); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported oauth provider %q", c.Provider)
 	}
+
 	apps, err := app.ListApps()
 	if err == nil {
 		if current, ok := findAppByInput(apps, c.Name); ok {
-			r.out.ok("Google OAuth enabled", map[string]any{
+			r.out.ok("OAuth enabled", map[string]any{
 				"app":           current.Name,
+				"provider":      c.Provider,
 				"callback_path": current.OAuth.Google.CallbackPath,
 				"redirect_uri":  current.OAuth.Google.RedirectURI,
 			})
 			return nil
 		}
 	}
-	r.out.ok("Google OAuth enabled", map[string]any{"app": c.Name, "callback_path": c.CallbackPath})
+	r.out.ok("OAuth enabled", map[string]any{
+		"app":           c.Name,
+		"provider":      c.Provider,
+		"callback_path": c.CallbackPath,
+	})
 	return nil
 }
 
-type AppOAuthGooglePrintCmd struct {
-	Name string `arg:"" name:"name" help:"App name."`
+type AppOAuthPrintCmd struct {
+	Name     string `arg:"" name:"name" help:"App name."`
+	Provider string `name:"provider" required:"" enum:"google" help:"OAuth provider name."`
 }
 
-func (c *AppOAuthGooglePrintCmd) Run(r *runContext) error {
-	block, err := app.OAuthGooglePrint(c.Name)
+func (c *AppOAuthPrintCmd) Run(r *runContext) error {
+	var (
+		block string
+		err   error
+	)
+	switch c.Provider {
+	case "google":
+		block, err = app.OAuthGooglePrint(c.Name)
+	default:
+		return fmt.Errorf("unsupported oauth provider %q", c.Provider)
+	}
 	if err != nil {
 		return err
 	}
 	if r.out.opts.JSON {
-		r.out.jsonOut(os.Stdout, map[string]any{"app": c.Name, "output": block})
+		r.out.jsonOut(os.Stdout, map[string]any{
+			"app":      c.Name,
+			"provider": c.Provider,
+			"output":   block,
+		})
 		return nil
 	}
 	fmt.Println(block)
