@@ -601,6 +601,7 @@ type CaddyCmd struct {
 
 type ServiceCmd struct {
 	Install   ServiceInstallCmd   `cmd:"" help:"Install and start the background service."`
+	Log       ServiceLogCmd       `cmd:"" help:"Show recent background service logs and follow live output."`
 	Start     ServiceStartCmd     `cmd:"" help:"Start the installed background service."`
 	Stop      ServiceStopCmd      `cmd:"" help:"Stop the background service."`
 	Status    ServiceStatusCmd    `cmd:"" help:"Show background service status."`
@@ -648,20 +649,24 @@ func (c *CaddyRunCmd) Run(_ *runContext) error {
 type ServiceInstallCmd struct{}
 
 func (c *ServiceInstallCmd) Run(r *runContext) error {
-	if err := app.ServiceInstall(); err != nil {
+	report, err := app.ServiceInstallWithReport()
+	if err != nil {
 		return err
 	}
 	r.out.ok("Background service installed", map[string]any{"label": "com.goliatone.switchd"})
+	renderServiceEnvWarnings(r, report)
 	return nil
 }
 
 type ServiceStartCmd struct{}
 
 func (c *ServiceStartCmd) Run(r *runContext) error {
-	if err := app.ServiceStart(); err != nil {
+	report, err := app.ServiceStartWithReport()
+	if err != nil {
 		return err
 	}
 	r.out.ok("Background service started", map[string]any{"label": "com.goliatone.switchd"})
+	renderServiceEnvWarnings(r, report)
 	return nil
 }
 
@@ -708,6 +713,18 @@ func (c *ServiceStatusCmd) Run(r *runContext) error {
 	if st.ConfigPath != "" {
 		fmt.Printf("config path: %s\n", st.ConfigPath)
 	}
+	if st.EnvFilePath != "" {
+		fmt.Printf("env file:    %s\n", st.EnvFilePath)
+	}
+	if len(st.RequiredEnvVars) > 0 {
+		fmt.Printf("required env: %s\n", strings.Join(st.RequiredEnvVars, ", "))
+	}
+	if len(st.ConfiguredEnvVars) > 0 {
+		fmt.Printf("configured env: %s\n", strings.Join(st.ConfiguredEnvVars, ", "))
+	}
+	if len(st.MissingEnvVars) > 0 {
+		fmt.Printf("missing env: %s\n", strings.Join(st.MissingEnvVars, ", "))
+	}
 	fmt.Printf("plist path:  %s\n", st.PlistPath)
 	fmt.Printf("state path:  %s\n", st.RuntimeStatePath)
 	fmt.Printf("log dir:     %s\n", st.LogDir)
@@ -715,6 +732,33 @@ func (c *ServiceStatusCmd) Run(r *runContext) error {
 		fmt.Printf("state err:   %s\n", st.StateError)
 	}
 	return nil
+}
+
+type ServiceLogCmd struct {
+	Lines    int    `name:"lines" default:"50" help:"Number of recent lines to print before following."`
+	Follow   bool   `name:"follow" default:"true" help:"Keep streaming appended log lines."`
+	NoFollow bool   `name:"no-follow" help:"Print the recent snapshot and exit."`
+	Stream   string `name:"stream" enum:"stdout,stderr,all" default:"all" help:"Log stream to read."`
+}
+
+func (c *ServiceLogCmd) Run(r *runContext) error {
+	if r.out.opts.JSON {
+		return fmt.Errorf("JSON output is not supported for service log yet")
+	}
+	follow := c.Follow
+	if c.NoFollow {
+		follow = false
+	}
+	if c.Lines < 0 {
+		return fmt.Errorf("--lines must be >= 0")
+	}
+	return app.ServiceLog(app.ServiceLogOptions{
+		Lines:  c.Lines,
+		Follow: follow,
+		Stream: c.Stream,
+		Stdout: os.Stdout,
+		Stderr: os.Stdout,
+	})
 }
 
 type ServiceUninstallCmd struct{}
@@ -1050,6 +1094,32 @@ func switchboardAppSessionLabel(a switchboard.App) string {
 		return "idle"
 	}
 	return "none"
+}
+
+func renderServiceEnvWarnings(r *runContext, report app.ServiceEnvironmentReport) {
+	if len(report.RequiredEnvVars) == 0 {
+		return
+	}
+	r.out.info("Background service credentials are loaded from launchd environment, not your interactive shell", map[string]any{
+		"env_file": report.EnvFilePath,
+		"required": strings.Join(report.RequiredEnvVars, ", "),
+	})
+	if len(report.ConfiguredEnvVars) > 0 {
+		r.out.info("Background service env vars configured", map[string]any{
+			"configured": strings.Join(report.ConfiguredEnvVars, ", "),
+			"env_file":   report.EnvFilePath,
+		})
+	}
+	if len(report.MissingEnvVars) == 0 {
+		return
+	}
+	r.out.warn("Background service is missing required env vars for provider resume", map[string]any{
+		"env_file": report.EnvFilePath,
+		"missing":  strings.Join(report.MissingEnvVars, ", "),
+	})
+	r.out.info("Add the missing values to the service env file and re-run `sudo switchd service start` or `sudo switchd service install`", map[string]any{
+		"env_file": report.EnvFilePath,
+	})
 }
 
 func commandName(raw string) string {
