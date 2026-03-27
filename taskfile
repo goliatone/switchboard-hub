@@ -415,7 +415,7 @@ function release {
         exit 1
     fi
 
-    if [ -n "$(git status --porcelain)" ]; then
+    if [ -n "$(git status --porcelain -uno)" ]; then
         echo "error: cannot pull with rebase: You have unstaged changes."
         echo "error: please commit or stash them."
         exit 1
