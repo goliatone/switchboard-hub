@@ -195,6 +195,10 @@ func fixSudoOwnership(path string) {
 	uidStr := strings.TrimSpace(os.Getenv("SUDO_UID"))
 	gidStr := strings.TrimSpace(os.Getenv("SUDO_GID"))
 	if uidStr == "" || gidStr == "" {
+		uidStr = strings.TrimSpace(os.Getenv("SWITCHD_CONFIG_OWNER_UID"))
+		gidStr = strings.TrimSpace(os.Getenv("SWITCHD_CONFIG_OWNER_GID"))
+	}
+	if uidStr == "" || gidStr == "" {
 		return
 	}
 	uid, err := strconv.Atoi(uidStr)
