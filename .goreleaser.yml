@@ -1,6 +1,6 @@
 version: 2
 
-project_name: switchboard-hub
+project_name: switchd
 
 before:
   hooks:
@@ -20,6 +20,11 @@ builds:
       - arm64
     ldflags:
       - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.buildDate={{ .Date }}
+      - -X main.buildTags=
+      - -X main.gitTag={{ .Tag }}
 
 archives:
   - id: switchd
@@ -37,9 +42,10 @@ checksum:
   name_template: checksums.txt
 
 snapshot:
-  version_template: "{{ .Tag }}-next"
+  version_template: "{{ .Version }}-next"
 
 changelog:
+  use: github
   sort: asc
   filters:
     exclude:
@@ -47,4 +53,40 @@ changelog:
       - "^test:"
       - "^chore:"
       - "^style:"
+      - "^Update README"
+      - "merge fix"
 
+brews:
+  - name: switchd
+    repository:
+      owner: goliatone
+      name: homebrew-tap
+    description: local development CLI for DNS, Caddy, and tunnel workflows on macOS.
+    homepage: https://github.com/goliatone/switchboard-hub
+    license: MIT
+    install: |
+      bin.install "switchd"
+      bin.install_symlink "switchd" => "sbd"
+    test: |
+      system "#{bin}/switchd", "version"
+      system "#{bin}/sbd", "version"
+
+nfpms:
+  - id: switchd
+    file_name_template: >-
+      {{- .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end -}}
+    bindir: /usr/local/bin/
+    maintainer: goliatone <switchd@goliat.one>
+    description: local development CLI for DNS, Caddy, and tunnel workflows on macOS.
+    homepage: https://github.com/goliatone/switchboard-hub
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    contents:
+      - src: /usr/local/bin/switchd
+        dst: /usr/local/bin/sbd
+        type: symlink
