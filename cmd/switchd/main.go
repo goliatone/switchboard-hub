@@ -801,7 +801,7 @@ func (o cliOutput) printTable(headers []string, rows [][]string) {
 	}
 	fmt.Println()
 	for _, row := range rows {
-		for i := 0; i < len(headers); i++ {
+		for i := range headers {
 			val := ""
 			if i < len(row) {
 				val = row[i]

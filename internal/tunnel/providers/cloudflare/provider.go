@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -495,10 +496,8 @@ func resolveOriginCertPath(cfg tunnel.ProviderConfig) (string, []string, error) 
 		if s == "" {
 			return
 		}
-		for _, seen := range candidates {
-			if seen == s {
-				return
-			}
+		if slices.Contains(candidates, s) {
+			return
 		}
 		candidates = append(candidates, s)
 	}
