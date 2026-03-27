@@ -61,6 +61,7 @@ brews:
     repository:
       owner: goliatone
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     description: local development CLI for DNS, Caddy, and tunnel workflows on macOS.
     homepage: https://github.com/goliatone/switchboard-hub
     license: MIT
