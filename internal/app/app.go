@@ -56,6 +56,10 @@ func sudoOwner() (int, int, bool) {
 	uidStr := strings.TrimSpace(os.Getenv("SUDO_UID"))
 	gidStr := strings.TrimSpace(os.Getenv("SUDO_GID"))
 	if uidStr == "" || gidStr == "" {
+		uidStr = strings.TrimSpace(os.Getenv("SWITCHD_CONFIG_OWNER_UID"))
+		gidStr = strings.TrimSpace(os.Getenv("SWITCHD_CONFIG_OWNER_GID"))
+	}
+	if uidStr == "" || gidStr == "" {
 		return 0, 0, false
 	}
 	uid, err := strconv.Atoi(uidStr)
@@ -383,6 +387,28 @@ func Status() error {
 	fmt.Println()
 	fmt.Println("Checks:")
 
+	serviceStatus, serviceErr := ServiceStatusInfo()
+	if serviceErr != nil {
+		fmt.Println("- Service:", "error:", serviceErr)
+	} else {
+		switch {
+		case serviceStatus.Running:
+			if serviceStatus.Phase != "" {
+				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d phase=%s\n", yesNo(serviceStatus.Installed), yesNo(true), yesNo(serviceStatus.Ready), serviceStatus.PID, serviceStatus.Phase)
+			} else {
+				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d\n", yesNo(serviceStatus.Installed), yesNo(true), yesNo(serviceStatus.Ready), serviceStatus.PID)
+			}
+		case serviceStatus.Stale:
+			if serviceStatus.StateError != "" {
+				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d error=%s\n", yesNo(serviceStatus.Installed), yesNo(false), serviceStatus.PID, serviceStatus.StateError)
+			} else {
+				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d\n", yesNo(serviceStatus.Installed), yesNo(false), serviceStatus.PID)
+			}
+		default:
+			fmt.Printf("- Service: installed=%s running=%s ready=%s\n", yesNo(serviceStatus.Installed), yesNo(false), yesNo(serviceStatus.Ready))
+		}
+	}
+
 	if err := validateTLSConfig(c); err != nil {
 		fmt.Println("- TLS:", "invalid:", err)
 	} else {
@@ -410,10 +436,18 @@ func Status() error {
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println("- Caddy:", "admin unreachable:", err)
-		fmt.Println("  Start: sudo switchd caddy run")
+		if serviceErr == nil && serviceStatus.Installed {
+			fmt.Println("  Start: sudo switchd service start")
+		} else {
+			fmt.Println("  Start: sudo switchd caddy run")
+		}
 	} else {
 		_ = resp.Body.Close()
-		fmt.Println("- Caddy:", "admin reachable")
+		if serviceErr == nil && serviceStatus.Running {
+			fmt.Println("- Caddy:", "admin reachable (background service)")
+		} else {
+			fmt.Println("- Caddy:", "admin reachable (external/foreground)")
+		}
 	}
 
 	fmt.Println("- Apps:", fmt.Sprintf("%d configured", len(c.Apps)))
@@ -453,6 +487,13 @@ func Status() error {
 	}
 
 	return nil
+}
+
+func yesNo(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
 }
 
 func TLSMkcert(certFile, keyFile string, install bool) error {
@@ -537,22 +578,31 @@ func CaddyRun() error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(p)
-	bootstrap := filepath.Join(dir, "bootstrap.Caddyfile")
-
-	if _, err := os.Stat(bootstrap); err != nil {
-		_ = os.MkdirAll(dir, 0o755)
-		if err := caddy.WriteBootstrapCaddyfile(bootstrap); err != nil {
-			return err
-		}
-		fixSudoOwnership(dir)
-		fixSudoOwnership(bootstrap)
+	bootstrap, created, err := ensureBootstrapCaddyfile(p)
+	if err != nil {
+		return err
+	}
+	if created {
 		fmt.Println("wrote:", bootstrap)
-	} else {
-		fixSudoOwnership(bootstrap)
 	}
 
 	return sys.Run("caddy", "run", "--config", bootstrap, "--adapter", "caddyfile")
+}
+
+func ensureBootstrapCaddyfile(configPath string) (string, bool, error) {
+	dir := filepath.Dir(configPath)
+	bootstrap := filepath.Join(dir, "bootstrap.Caddyfile")
+	if _, err := os.Stat(bootstrap); err != nil {
+		_ = os.MkdirAll(dir, 0o755)
+		if err := caddy.WriteBootstrapCaddyfile(bootstrap); err != nil {
+			return "", false, err
+		}
+		fixSudoOwnership(dir)
+		fixSudoOwnership(bootstrap)
+		return bootstrap, true, nil
+	}
+	fixSudoOwnership(bootstrap)
+	return bootstrap, false, nil
 }
 
 func normalizeHost(nameOrHost, tld string) string {
