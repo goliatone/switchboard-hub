@@ -98,6 +98,38 @@ func TestCommandErrorUsesInvocationName(t *testing.T) {
 	}
 }
 
+func TestServiceLogCommandParses(t *testing.T) {
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	if _, err := parser.Parse([]string{"service", "log", "--stream", "stderr", "--no-follow"}); err != nil {
+		t.Fatalf("expected service log to parse, got %v", err)
+	}
+}
+
+func TestServiceLogCommandRejectsInvalidStream(t *testing.T) {
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	if _, err := parser.Parse([]string{"service", "log", "--stream", "nope"}); err == nil {
+		t.Fatal("expected invalid stream parse error")
+	}
+}
+
+func TestServiceLogCommandRejectsJSONMode(t *testing.T) {
+	_, _, err := runCLIForTest(t, nil, []string{"--json", "service", "log", "--no-follow"})
+	if err == nil {
+		t.Fatal("expected JSON mode rejection")
+	}
+	if !strings.Contains(err.Error(), "JSON output is not supported for service log") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestStackEnvCommand(t *testing.T) {
 	client, stackPath := setupCLIStackFixture(t)
 	stdout, _, err := runCLIForTest(t, client, []string{"stack", "env", "-f", stackPath})
