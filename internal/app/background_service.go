@@ -1,11 +1,13 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,13 +19,16 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/goliatone/switchboard-hub/internal/config"
 )
 
 const (
-	launchdServiceLabel  = "com.goliatone.switchd"
-	launchdServiceDomain = "system"
-	serviceReadyTimeout  = 30 * time.Second
-	serviceStopTimeout   = 90 * time.Second
+	launchdServiceLabel    = "com.goliatone.switchd"
+	launchdServiceDomain   = "system"
+	serviceReadyTimeout    = 30 * time.Second
+	serviceStopTimeout     = 90 * time.Second
+	serviceLogPollInterval = 250 * time.Millisecond
 )
 
 var (
@@ -42,20 +47,38 @@ var (
 )
 
 type LaunchdServiceStatus struct {
-	Label            string `json:"label"`
-	PlistPath        string `json:"plist_path"`
-	RuntimeStatePath string `json:"runtime_state_path"`
-	LogDir           string `json:"log_dir"`
-	ConfigPath       string `json:"config_path,omitempty"`
-	Installed        bool   `json:"installed"`
-	Running          bool   `json:"running"`
-	Ready            bool   `json:"ready"`
-	Stale            bool   `json:"stale"`
-	PID              int    `json:"pid,omitempty"`
-	CaddyPID         int    `json:"caddy_pid,omitempty"`
-	StartedAt        string `json:"started_at,omitempty"`
-	Phase            string `json:"phase,omitempty"`
-	StateError       string `json:"state_error,omitempty"`
+	Label             string   `json:"label"`
+	PlistPath         string   `json:"plist_path"`
+	RuntimeStatePath  string   `json:"runtime_state_path"`
+	LogDir            string   `json:"log_dir"`
+	EnvFilePath       string   `json:"env_file_path,omitempty"`
+	ConfigPath        string   `json:"config_path,omitempty"`
+	Installed         bool     `json:"installed"`
+	Running           bool     `json:"running"`
+	Ready             bool     `json:"ready"`
+	Stale             bool     `json:"stale"`
+	PID               int      `json:"pid,omitempty"`
+	CaddyPID          int      `json:"caddy_pid,omitempty"`
+	StartedAt         string   `json:"started_at,omitempty"`
+	Phase             string   `json:"phase,omitempty"`
+	StateError        string   `json:"state_error,omitempty"`
+	RequiredEnvVars   []string `json:"required_env_vars,omitempty"`
+	MissingEnvVars    []string `json:"missing_env_vars,omitempty"`
+	ConfiguredEnvVars []string `json:"configured_env_vars,omitempty"`
+}
+
+type ServiceEnvironmentReport struct {
+	ConfigPath        string   `json:"config_path"`
+	EnvFilePath       string   `json:"env_file_path"`
+	RequiredEnvVars   []string `json:"required_env_vars,omitempty"`
+	ConfiguredEnvVars []string `json:"configured_env_vars,omitempty"`
+	MissingEnvVars    []string `json:"missing_env_vars,omitempty"`
+}
+
+type daemonResumeReport struct {
+	ActiveApps  int
+	FailedApps  []string
+	ResumedApps int
 }
 
 type daemonRuntimeState struct {
@@ -134,91 +157,314 @@ type backgroundDaemon struct {
 	now        func() time.Time
 }
 
+type ServiceLogOptions struct {
+	Lines  int
+	Follow bool
+	Stream string
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+type serviceLogStream struct {
+	name    string
+	path    string
+	writer  io.Writer
+	stat    os.FileInfo
+	offset  int64
+	partial string
+}
+
 func launchdServiceTarget() string {
 	return launchdServiceDomain + "/" + launchdServiceLabel
 }
 
-func ServiceInstall() error {
-	if effectiveUID() != 0 {
-		return errors.New("service install must be run with sudo")
-	}
-	if err := unloadInstalledServiceDefinition(); err != nil {
-		return err
-	}
-	cfgPath, err := cfgPath()
-	if err != nil {
-		return err
-	}
-	exe, err := resolveExecutable()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(launchdPlistPath), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(launchdRuntimeDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
-		return err
-	}
-	uid, gid := configOwnerIDs()
-	plist, err := renderLaunchdPlist(launchdPlistSpec{
-		Label:            launchdServiceLabel,
-		ProgramArguments: []string{exe, "daemon", "run"},
-		Environment: map[string]string{
-			"PATH":                    "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-			"SWITCHD_CONFIG_PATH":     cfgPath,
-			"SWITCHD_CONFIG_OWNER_UID": uid,
-			"SWITCHD_CONFIG_OWNER_GID": gid,
-		},
-		StandardOutPath: serviceStdoutPath,
-		StandardErrPath: serviceStderrPath,
-	})
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(launchdPlistPath, plist, 0o644); err != nil {
-		return fmt.Errorf("write launchd plist: %w", err)
-	}
-	if err := ServiceStart(); err != nil {
-		return err
-	}
-	return nil
+func ServiceLog(opts ServiceLogOptions) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return serviceLogWithContext(ctx, opts)
 }
 
-func ServiceStart() error {
-	if effectiveUID() != 0 {
-		return errors.New("service start must be run with sudo")
+func serviceLogWithContext(ctx context.Context, opts ServiceLogOptions) error {
+	streams, prefixLabels, err := newServiceLogStreams(opts)
+	if err != nil {
+		return err
 	}
-	if _, err := os.Stat(launchdPlistPath); err != nil {
+
+	lines := opts.Lines
+	if lines < 0 {
+		return fmt.Errorf("--lines must be >= 0")
+	}
+
+	found := false
+	for _, stream := range streams {
+		exists, err := stream.snapshot(lines, prefixLabels)
+		if err != nil {
+			return err
+		}
+		if exists {
+			found = true
+		}
+	}
+	if !found {
+		paths := make([]string, 0, len(streams))
+		for _, stream := range streams {
+			paths = append(paths, stream.path)
+		}
+		sort.Strings(paths)
+		return fmt.Errorf(
+			"service logs not found (%s). Check `switchd service status`, then run `sudo switchd service install` or `sudo switchd service start`",
+			strings.Join(paths, ", "),
+		)
+	}
+	if !opts.Follow {
+		return nil
+	}
+
+	ticker := time.NewTicker(serviceLogPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			for _, stream := range streams {
+				if err := stream.poll(prefixLabels); err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
+func newServiceLogStreams(opts ServiceLogOptions) ([]*serviceLogStream, bool, error) {
+	mode := strings.ToLower(strings.TrimSpace(opts.Stream))
+	if mode == "" {
+		mode = "all"
+	}
+
+	stdoutWriter := opts.Stdout
+	if stdoutWriter == nil {
+		stdoutWriter = os.Stdout
+	}
+	stderrWriter := opts.Stderr
+	if stderrWriter == nil {
+		stderrWriter = os.Stderr
+	}
+
+	streams := make([]*serviceLogStream, 0, 2)
+	switch mode {
+	case "all":
+		streams = append(streams,
+			&serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter},
+			&serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter},
+		)
+	case "stdout":
+		streams = append(streams, &serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter})
+	case "stderr":
+		streams = append(streams, &serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter})
+	default:
+		return nil, false, fmt.Errorf("unsupported stream %q", opts.Stream)
+	}
+
+	return streams, len(streams) > 1, nil
+}
+
+func (s *serviceLogStream) snapshot(lines int, prefix bool) (bool, error) {
+	data, stat, err := readServiceLogFile(s.path)
+	if err != nil {
 		if os.IsNotExist(err) {
-			return errors.New("service is not installed (run `sudo switchd service install`)")
+			s.stat = nil
+			s.offset = 0
+			s.partial = ""
+			return false, nil
+		}
+		return false, err
+	}
+
+	s.stat = stat
+	s.offset = int64(len(data))
+	s.partial = ""
+
+	for _, line := range tailLines(data, lines) {
+		if err := s.writeLine(line, prefix); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
+}
+
+func (s *serviceLogStream) poll(prefix bool) error {
+	info, err := os.Stat(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.stat = nil
+			s.offset = 0
+			s.partial = ""
+			return nil
 		}
 		return err
 	}
-	st, err := ServiceStatusInfo()
+
+	if s.stat != nil && !os.SameFile(s.stat, info) {
+		s.offset = 0
+		s.partial = ""
+	}
+	if info.Size() < s.offset {
+		s.offset = 0
+		s.partial = ""
+	}
+	if info.Size() == s.offset {
+		s.stat = info
+		return nil
+	}
+
+	f, err := os.Open(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.stat = nil
+			s.offset = 0
+			s.partial = ""
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(s.offset, io.SeekStart); err != nil {
+		return err
+	}
+
+	chunk, err := io.ReadAll(f)
 	if err != nil {
 		return err
 	}
-	if st.Running {
+
+	s.offset += int64(len(chunk))
+	s.stat = info
+	return s.consume(chunk, prefix)
+}
+
+func (s *serviceLogStream) consume(chunk []byte, prefix bool) error {
+	if len(chunk) == 0 {
 		return nil
 	}
-	if st.Stale {
-		_ = os.Remove(serviceStatePath)
+
+	data := s.partial + string(chunk)
+	for {
+		idx := strings.IndexByte(data, '\n')
+		if idx < 0 {
+			s.partial = data
+			return nil
+		}
+		line := strings.TrimSuffix(data[:idx], "\r")
+		if err := s.writeLine(line, prefix); err != nil {
+			return err
+		}
+		data = data[idx+1:]
 	}
-	_, err = launchctlRun("bootstrap", launchdServiceDomain, launchdPlistPath)
-	if err != nil && !isLaunchctlAlreadyLoaded(err) {
+}
+
+func (s *serviceLogStream) writeLine(line string, prefix bool) error {
+	if s == nil || s.writer == nil {
+		return nil
+	}
+	if prefix {
+		if line == "" {
+			_, err := fmt.Fprintf(s.writer, "%s:\n", s.name)
+			return err
+		}
+		_, err := fmt.Fprintf(s.writer, "%s: %s\n", s.name, line)
 		return err
 	}
-	_, err = launchctlRun("enable", launchdServiceTarget())
-	if err != nil && !isLaunchctlNoop(err) {
-		return err
+	_, err := fmt.Fprintln(s.writer, line)
+	return err
+}
+
+func readServiceLogFile(path string) ([]byte, os.FileInfo, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
 	}
-	if _, err := launchctlRun("kickstart", "-kp", launchdServiceTarget()); err != nil {
-		return err
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
 	}
-	return waitForServiceReady(serviceReadyTimeout)
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, stat, nil
+}
+
+func tailLines(data []byte, count int) []string {
+	if count <= 0 || len(data) == 0 {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if count >= len(lines) {
+		return lines
+	}
+	return lines[len(lines)-count:]
+}
+
+func ServiceInstall() error {
+	_, err := ServiceInstallWithReport()
+	return err
+}
+
+func ServiceInstallWithReport() (ServiceEnvironmentReport, error) {
+	if effectiveUID() != 0 {
+		return ServiceEnvironmentReport{}, errors.New("service install must be run with sudo")
+	}
+	if err := unloadInstalledServiceDefinition(); err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	report, err := syncLaunchdPlist()
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	if _, err := startPreparedService(); err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	return report, nil
+}
+
+func ServiceStart() error {
+	_, err := ServiceStartWithReport()
+	return err
+}
+
+func ServiceStartWithReport() (ServiceEnvironmentReport, error) {
+	if effectiveUID() != 0 {
+		return ServiceEnvironmentReport{}, errors.New("service start must be run with sudo")
+	}
+	if _, err := os.Stat(launchdPlistPath); err != nil {
+		if os.IsNotExist(err) {
+			return ServiceEnvironmentReport{}, errors.New("service is not installed (run `sudo switchd service install`)")
+		}
+		return ServiceEnvironmentReport{}, err
+	}
+	report, err := syncLaunchdPlist()
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	st, err := ServiceStatusInfo()
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	if st.Running {
+		return report, nil
+	}
+	if _, err := startPreparedService(); err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	return report, nil
 }
 
 func ServiceStop() error {
@@ -269,6 +515,14 @@ func ServiceStatusInfo() (LaunchdServiceStatus, error) {
 		PlistPath:        launchdPlistPath,
 		RuntimeStatePath: serviceStatePath,
 		LogDir:           launchdLogDir,
+	}
+	report, reportErr := ServiceEnvironmentInfo()
+	if reportErr == nil {
+		st.ConfigPath = report.ConfigPath
+		st.EnvFilePath = report.EnvFilePath
+		st.RequiredEnvVars = report.RequiredEnvVars
+		st.ConfiguredEnvVars = report.ConfiguredEnvVars
+		st.MissingEnvVars = report.MissingEnvVars
 	}
 	if _, err := os.Stat(launchdPlistPath); err == nil {
 		st.Installed = true
@@ -386,13 +640,18 @@ func (d *backgroundDaemon) Run(ctx context.Context) error {
 	if err := writeDaemonRuntimeState(state); err != nil {
 		return err
 	}
-	if err := d.resumePersistedApps(); err != nil {
+	resumeReport, err := d.resumePersistedApps()
+	if err != nil {
 		_ = terminateManagedProcess(caddyProc, 2*time.Second)
 		return fail("resume_error", err)
 	}
 	state.Ready = true
 	state.LastError = ""
 	state.Phase = "ready"
+	if len(resumeReport.FailedApps) > 0 {
+		state.Phase = "ready_degraded"
+		state.LastError = strings.Join(resumeReport.FailedApps, "; ")
+	}
 	if err := writeDaemonRuntimeState(state); err != nil {
 		return err
 	}
@@ -423,25 +682,29 @@ func (d *backgroundDaemon) Run(ctx context.Context) error {
 	}
 }
 
-func (d *backgroundDaemon) resumePersistedApps() error {
+func (d *backgroundDaemon) resumePersistedApps() (daemonResumeReport, error) {
 	cfgPath, cfg, err := d.service.LoadOrCreateDefaultConfig()
 	if err != nil {
-		return err
+		return daemonResumeReport{}, err
 	}
-	active := 0
+	report := daemonResumeReport{}
+	changed := false
 	for _, a := range cfg.Apps {
 		if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) == "" {
 			continue
 		}
-		active++
+		report.ActiveApps++
 		if _, err := d.service.EnsureAppRuntime(cfg, a.Name); err != nil {
-			return err
+			report.FailedApps = append(report.FailedApps, fmt.Sprintf("%s: %v", a.Name, err))
+			continue
 		}
+		report.ResumedApps++
+		changed = true
 	}
-	if active == 0 {
-		return nil
+	if !changed {
+		return report, nil
 	}
-	return d.service.SaveConfigAt(cfgPath, cfg)
+	return report, d.service.SaveConfigAt(cfgPath, cfg)
 }
 
 func (d *backgroundDaemon) shutdown(caddyProc daemonProcess) error {
@@ -503,10 +766,6 @@ func unloadInstalledServiceDefinition() error {
 	if err != nil && !isLaunchctlNotLoaded(err) {
 		return err
 	}
-	_, err = launchctlRun("disable", launchdServiceTarget())
-	if err != nil && !isLaunchctlNotLoaded(err) && !isLaunchctlNoop(err) {
-		return err
-	}
 	_ = os.Remove(serviceStatePath)
 	return nil
 }
@@ -514,6 +773,202 @@ func unloadInstalledServiceDefinition() error {
 func runtimeStateExists() bool {
 	_, err := os.Stat(serviceStatePath)
 	return err == nil
+}
+
+func ServiceEnvironmentInfo() (ServiceEnvironmentReport, error) {
+	configPath, err := cfgPath()
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	report, _, err := resolveServiceEnvironment(configPath)
+	return report, err
+}
+
+func startPreparedService() (LaunchdServiceStatus, error) {
+	if err := unloadInstalledServiceDefinition(); err != nil {
+		return LaunchdServiceStatus{}, err
+	}
+	_, err := launchctlRun("enable", launchdServiceTarget())
+	if err != nil && !isLaunchctlNoop(err) {
+		return LaunchdServiceStatus{}, err
+	}
+	_, err = launchctlRun("bootstrap", launchdServiceDomain, launchdPlistPath)
+	if err != nil && !isLaunchctlAlreadyLoaded(err) {
+		return LaunchdServiceStatus{}, err
+	}
+	if _, err := launchctlRun("kickstart", "-kp", launchdServiceTarget()); err != nil {
+		return LaunchdServiceStatus{}, err
+	}
+	if err := waitForServiceReady(serviceReadyTimeout); err != nil {
+		return LaunchdServiceStatus{}, err
+	}
+	return ServiceStatusInfo()
+}
+
+func syncLaunchdPlist() (ServiceEnvironmentReport, error) {
+	configPath, err := cfgPath()
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	report, env, err := resolveServiceEnvironment(configPath)
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	exe, err := resolveExecutable()
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(launchdPlistPath), 0o755); err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	if err := os.MkdirAll(launchdRuntimeDir, 0o755); err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	plist, err := renderLaunchdPlist(launchdPlistSpec{
+		Label:            launchdServiceLabel,
+		ProgramArguments: []string{exe, "daemon", "run"},
+		Environment:      env,
+		StandardOutPath:  serviceStdoutPath,
+		StandardErrPath:  serviceStderrPath,
+	})
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	if err := os.WriteFile(launchdPlistPath, plist, 0o644); err != nil {
+		return ServiceEnvironmentReport{}, fmt.Errorf("write launchd plist: %w", err)
+	}
+	return report, nil
+}
+
+func resolveServiceEnvironment(configPath string) (ServiceEnvironmentReport, map[string]string, error) {
+	cfg, err := config.LoadOrDefault(configPath)
+	if err != nil {
+		return ServiceEnvironmentReport{}, nil, err
+	}
+	report := ServiceEnvironmentReport{
+		ConfigPath:  configPath,
+		EnvFilePath: serviceEnvPath(configPath),
+	}
+	required := requiredServiceEnvVars(cfg)
+	report.RequiredEnvVars = append(report.RequiredEnvVars, required...)
+	fileVars, err := loadServiceEnvFile(report.EnvFilePath)
+	if err != nil {
+		return ServiceEnvironmentReport{}, nil, err
+	}
+	uid, gid := configOwnerIDs()
+	env := map[string]string{
+		"PATH":                     "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+		"HOME":                     defaultServiceHome(),
+		"SWITCHD_CONFIG_PATH":      configPath,
+		"SWITCHD_CONFIG_OWNER_UID": uid,
+		"SWITCHD_CONFIG_OWNER_GID": gid,
+	}
+	for _, name := range required {
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			value = strings.TrimSpace(fileVars[name])
+		}
+		if value == "" {
+			report.MissingEnvVars = append(report.MissingEnvVars, name)
+			continue
+		}
+		env[name] = value
+		report.ConfiguredEnvVars = append(report.ConfiguredEnvVars, name)
+	}
+	return report, env, nil
+}
+
+func requiredServiceEnvVars(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+	}
+	for providerName, providerCfg := range cfg.Tunnel.Providers {
+		for key, value := range providerCfg.Values {
+			if strings.HasSuffix(strings.ToLower(strings.TrimSpace(key)), "_env") {
+				add(value)
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(providerName), "cloudflare") {
+			mode := strings.ToLower(strings.TrimSpace(providerCfg.Values["mode"]))
+			if mode == "api" {
+				envName := strings.TrimSpace(providerCfg.Values["api_token_env"])
+				if envName == "" {
+					envName = "SWITCHD_CF_API_TOKEN"
+				}
+				add(envName)
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func serviceEnvPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "service.env")
+}
+
+func loadServiceEnvFile(path string) (map[string]string, error) {
+	out := map[string]string{}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key == "" {
+			continue
+		}
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		out[key] = value
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func defaultServiceHome() string {
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return home
+	}
+	return "/var/root"
 }
 
 func readDaemonRuntimeState() (daemonRuntimeState, error) {
@@ -714,9 +1169,9 @@ func isLaunchctlNoop(err error) bool {
 type launchdPlistSpec struct {
 	Label            string
 	ProgramArguments []string
-	Environment       map[string]string
-	StandardOutPath   string
-	StandardErrPath   string
+	Environment      map[string]string
+	StandardOutPath  string
+	StandardErrPath  string
 }
 
 func renderLaunchdPlist(spec launchdPlistSpec) ([]byte, error) {
