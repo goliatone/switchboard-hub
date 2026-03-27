@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/goliatone/switchboard-hub/internal/config"
+	"github.com/goliatone/switchboard-hub/pkg/switchboard"
 )
 
 func TestGlobalFlagsUseJSON(t *testing.T) {
@@ -42,4 +48,112 @@ func TestFindAppByInput(t *testing.T) {
 	if _, ok := findAppByInput(apps, "missing"); ok {
 		t.Fatal("expected no match for missing app")
 	}
+}
+
+func TestStackEnvCommand(t *testing.T) {
+	client, stackPath := setupCLIStackFixture(t)
+	stdout, _, err := runCLIForTest(t, client, []string{"stack", "env", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("runCLIForTest returned error: %v", err)
+	}
+	want := "APP_HTTP__BASE_URL=https://app.carina.getctx.com\n"
+	if stdout != want {
+		t.Fatalf("stdout=%q want %q", stdout, want)
+	}
+}
+
+func TestStackPlanCommandJSON(t *testing.T) {
+	client, stackPath := setupCLIStackFixture(t)
+	stdout, _, err := runCLIForTest(t, client, []string{"--output", "json", "stack", "plan", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("runCLIForTest returned error: %v", err)
+	}
+	if !bytes.Contains([]byte(stdout), []byte(`"command": "plan"`)) {
+		t.Fatalf("expected json output to contain command, got %s", stdout)
+	}
+	if !bytes.Contains([]byte(stdout), []byte(`"type": "create_app"`)) {
+		t.Fatalf("expected json output to contain create_app action, got %s", stdout)
+	}
+}
+
+func setupCLIStackFixture(t *testing.T) (*switchboard.Client, string) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	stackPath := filepath.Join(dir, "stack.yaml")
+
+	client := switchboard.New(switchboard.Options{ConfigPath: cfgPath})
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		t.Fatalf("LoadOrCreateDefaultConfig returned error: %v", err)
+	}
+	cfg.TLD = "test"
+	cfg.Caddy.TLS.Enabled = false
+	if err := client.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+
+	stackYAML := `
+version: 1
+name: carina
+services:
+  - name: app
+    local_port: 8383
+    public_host: app.carina.getctx.com
+outputs:
+  APP_HTTP__BASE_URL: "https://{{ service \"app\" \"public_host\" }}"
+`
+	if err := os.WriteFile(stackPath, []byte(stackYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	return client, stackPath
+}
+
+func runCLIForTest(t *testing.T, client *switchboard.Client, args []string) (string, string, error) {
+	t.Helper()
+	cli := CLI{}
+	parser, err := kong.New(
+		&cli,
+		kong.Name("switchd"),
+		kong.Description("manage *.test local DNS + Caddy routes (switchboard-hub)"),
+		kong.UsageOnError(),
+	)
+	if err != nil {
+		t.Fatalf("kong.New returned error: %v", err)
+	}
+	ctx, err := parser.Parse(args)
+	if err != nil {
+		return "", "", err
+	}
+
+	stdout, runErr := captureStdout(t, func() error {
+		return ctx.Run(&runContext{
+			parser: parser,
+			out: cliOutput{opts: outputOptions{
+				Quiet: cli.Quiet,
+				JSON:  cli.useJSON(),
+			}},
+			client: client,
+		})
+	})
+	return stdout, "", runErr
+}
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe returned error: %v", err)
+	}
+	defer r.Close()
+	os.Stdout = w
+	runErr := fn()
+	_ = w.Close()
+	os.Stdout = orig
+	b, readErr := io.ReadAll(r)
+	if readErr != nil {
+		t.Fatalf("ReadAll returned error: %v", readErr)
+	}
+	return string(b), runErr
 }
