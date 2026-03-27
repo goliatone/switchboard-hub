@@ -41,6 +41,8 @@ It configures:
 
 `switchd caddy run` is still available as a foreground/manual debug path.
 
+The background `launchd` service reads provider secrets from `~/.config/switchboard-hub/service.env`. It does not inherit variables you exported only in your interactive shell.
+
 ## Requirements
 
 - macOS
@@ -122,6 +124,15 @@ Install and start the background service:
 sudo ./build/switchd service install
 ```
 
+If you use provider credentials for background resume, add them to `service.env` first:
+
+```bash
+cat >> ~/.config/switchboard-hub/service.env <<'EOF'
+SWITCHD_CF_API_TOKEN=<cloudflare_api_token>
+EOF
+sudo ./build/switchd service install
+```
+
 Check service state:
 
 ```bash
@@ -166,6 +177,9 @@ Check health:
 ```bash
 ./build/switchd status
 ./build/switchd service status
+./build/switchd service log
+./build/switchd service log --stream stderr
+./build/switchd service log --no-follow --lines 200
 ```
 
 ## Daily use (apps + tunnels for OAuth)
@@ -179,6 +193,9 @@ Create app:
 Initialize provider (Cloudflare API mode example):
 
 ```bash
+cat >> ~/.config/switchboard-hub/service.env <<'EOF'
+SWITCHD_CF_API_TOKEN=<cloudflare_api_token>
+EOF
 ./build/switchd tunnel init \
   --provider cloudflare \
   --mode api \
@@ -323,7 +340,7 @@ Main commands:
 - `stack plan|up|down|status|env -f <file>`
 - `app oauth enable|print --provider <provider>`
 - `tunnel providers|init|status`
-- `service install|start|stop|status|uninstall`
+- `service install|log|start|stop|status|uninstall`
 - `tls mkcert`
 - `status`
 - `version`
@@ -389,6 +406,7 @@ If tunnel commands fail:
 
 - run `switchd tunnel providers`
 - run `switchd tunnel status`
+- if background resume needs credentials, add them to `~/.config/switchboard-hub/service.env` and re-run `sudo switchd service start`
 - re-run `switchd tunnel init --provider <name>`
 
 ## Uninstall
