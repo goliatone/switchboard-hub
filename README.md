@@ -2,6 +2,8 @@
 
 `switchd` is a local development CLI for macOS.
 
+It supports both the original imperative app workflow and a declarative stack workflow backed by the same reusable Go API.
+
 It sets up:
 
 - wildcard local DNS for `*.test`
@@ -181,6 +183,93 @@ List apps and provider state:
 ./build/switchd tunnel status
 ```
 
+## Daily use (declarative stacks)
+
+Stacks are a declarative layer over the existing app/tunnel model. Each stack service reconciles to a real app in `~/.config/switchboard-hub/config.yaml`.
+
+Example stack file:
+
+```yaml
+version: 1
+name: carina
+
+defaults:
+  provider: cloudflare
+  expose: true
+  up: true
+
+services:
+  - name: app
+    local_port: 8383
+    public_host: app.carina.getctx.com
+
+  - name: simulator
+    local_port: 8090
+    public_host: carina.getctx.com
+
+outputs:
+  APP_HTTP__BASE_URL: "https://{{ service \"app\" \"public_host\" }}"
+  APP_SHIM__BASE_URL: "https://{{ service \"simulator\" \"public_host\" }}"
+  APP_SHIM__APP_TARGET_BASE_URL: "https://{{ service \"app\" \"public_host\" }}"
+  APP_HTTP__TRUST_FORWARDED_HEADERS: "true"
+  APP_ADMIN_AUTH__COOKIE_DOMAIN: "{{ parent_domain (service \"simulator\" \"public_host\") }}"
+```
+
+Preview and reconcile it:
+
+```bash
+./build/switchd stack plan -f ./stack.yaml
+./build/switchd stack up -f ./stack.yaml
+./build/switchd stack status -f ./stack.yaml
+./build/switchd stack env -f ./stack.yaml
+./build/switchd stack down -f ./stack.yaml
+```
+
+`stack env` is deterministic and side-effect free. It renders output variables from desired stack data only:
+
+```bash
+APP_HTTP__BASE_URL=https://app.carina.getctx.com
+APP_SHIM__BASE_URL=https://carina.getctx.com
+APP_SHIM__APP_TARGET_BASE_URL=https://app.carina.getctx.com
+APP_HTTP__TRUST_FORWARDED_HEADERS=true
+APP_ADMIN_AUTH__COOKIE_DOMAIN=getctx.com
+```
+
+Managed stack apps are identified with metadata (`managed_by=stack`, `stack`, `service`). `switchd` will not silently adopt unrelated existing apps if names or public hosts collide.
+
+## Go API
+
+Another Go module can import `github.com/goliatone/switchboard-hub/pkg/switchboard` instead of shelling out to `switchd`.
+
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/goliatone/switchboard-hub/pkg/switchboard"
+)
+
+func main() {
+	client := switchboard.New(switchboard.Options{
+		ConfigPath: "/tmp/switchboard/config.yaml",
+	})
+
+	if _, err := client.LoadOrCreateDefaultConfig(); err != nil {
+		log.Fatal(err)
+	}
+	if err := client.CreateApp("demo", 3000); err != nil {
+		log.Fatal(err)
+	}
+
+	report, err := client.StackPlan("./stack.yaml")
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("planned services: %d", len(report.Services))
+}
+```
+
 ## Command reference
 
 Show top-level help:
@@ -195,6 +284,7 @@ Main commands:
 - `init`
 - `add`, `rm`, `ls`, `apply`, `open`
 - `app create|rm|ls|expose|up|down`
+- `stack plan|up|down|status|env -f <file>`
 - `app oauth enable|print --provider <provider>`
 - `tunnel providers|init|status`
 - `tls mkcert`
