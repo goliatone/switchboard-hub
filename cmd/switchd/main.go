@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -24,6 +25,8 @@ var (
 	buildTags = ""
 	gitTag    = ""
 )
+
+const defaultCommandName = "switchd"
 
 type globalFlags struct {
 	Debug   bool   `name:"debug" help:"Enable debug logs."`
@@ -55,8 +58,10 @@ type CLI struct {
 	Open      OpenCmd      `cmd:"" help:"Open app URL in browser."`
 	Uninstall UninstallCmd `cmd:"" help:"Uninstall switchd local setup."`
 	Status    StatusCmd    `cmd:"" help:"Show status diagnostics."`
+	Service   ServiceCmd   `cmd:"" help:"Manage the macOS background service."`
 	Version   VersionCmd   `cmd:"" help:"Show build/version info."`
 	Caddy     CaddyCmd     `cmd:"" help:"Caddy control commands."`
+	Daemon    DaemonCmd    `cmd:"" help:"Internal daemon commands."`
 	Help      HelpCmd      `cmd:"" help:"Show help for a command path."`
 }
 
@@ -594,6 +599,18 @@ type CaddyCmd struct {
 	Run CaddyRunCmd `cmd:"" name:"run" help:"Run Caddy foreground process."`
 }
 
+type ServiceCmd struct {
+	Install   ServiceInstallCmd   `cmd:"" help:"Install and start the background service."`
+	Start     ServiceStartCmd     `cmd:"" help:"Start the installed background service."`
+	Stop      ServiceStopCmd      `cmd:"" help:"Stop the background service."`
+	Status    ServiceStatusCmd    `cmd:"" help:"Show background service status."`
+	Uninstall ServiceUninstallCmd `cmd:"" help:"Stop and remove the background service."`
+}
+
+type DaemonCmd struct {
+	Run DaemonRunCmd `cmd:"" name:"run" help:"Run the internal switchd background daemon."`
+}
+
 type VersionCmd struct{}
 
 func (c *VersionCmd) Run(r *runContext) error {
@@ -628,6 +645,94 @@ func (c *CaddyRunCmd) Run(_ *runContext) error {
 	return app.CaddyRun()
 }
 
+type ServiceInstallCmd struct{}
+
+func (c *ServiceInstallCmd) Run(r *runContext) error {
+	if err := app.ServiceInstall(); err != nil {
+		return err
+	}
+	r.out.ok("Background service installed", map[string]any{"label": "com.goliatone.switchd"})
+	return nil
+}
+
+type ServiceStartCmd struct{}
+
+func (c *ServiceStartCmd) Run(r *runContext) error {
+	if err := app.ServiceStart(); err != nil {
+		return err
+	}
+	r.out.ok("Background service started", map[string]any{"label": "com.goliatone.switchd"})
+	return nil
+}
+
+type ServiceStopCmd struct{}
+
+func (c *ServiceStopCmd) Run(r *runContext) error {
+	if err := app.ServiceStop(); err != nil {
+		return err
+	}
+	r.out.ok("Background service stopped", map[string]any{"label": "com.goliatone.switchd"})
+	return nil
+}
+
+type ServiceStatusCmd struct{}
+
+func (c *ServiceStatusCmd) Run(r *runContext) error {
+	st, err := app.ServiceStatusInfo()
+	if err != nil {
+		return err
+	}
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, st)
+		return nil
+	}
+	fmt.Printf("label:       %s\n", st.Label)
+	fmt.Printf("installed:   %s\n", boolLabel(st.Installed))
+	fmt.Printf("running:     %s\n", boolLabel(st.Running))
+	fmt.Printf("ready:       %s\n", boolLabel(st.Ready))
+	if st.Stale {
+		fmt.Printf("stale:       %s\n", boolLabel(true))
+	}
+	if st.Phase != "" {
+		fmt.Printf("phase:       %s\n", st.Phase)
+	}
+	if st.PID > 0 {
+		fmt.Printf("pid:         %d\n", st.PID)
+	}
+	if st.CaddyPID > 0 {
+		fmt.Printf("caddy pid:   %d\n", st.CaddyPID)
+	}
+	if st.StartedAt != "" {
+		fmt.Printf("started at:  %s\n", st.StartedAt)
+	}
+	if st.ConfigPath != "" {
+		fmt.Printf("config path: %s\n", st.ConfigPath)
+	}
+	fmt.Printf("plist path:  %s\n", st.PlistPath)
+	fmt.Printf("state path:  %s\n", st.RuntimeStatePath)
+	fmt.Printf("log dir:     %s\n", st.LogDir)
+	if st.StateError != "" {
+		fmt.Printf("state err:   %s\n", st.StateError)
+	}
+	return nil
+}
+
+type ServiceUninstallCmd struct{}
+
+func (c *ServiceUninstallCmd) Run(r *runContext) error {
+	if err := app.ServiceUninstall(); err != nil {
+		return err
+	}
+	r.out.ok("Background service uninstalled", map[string]any{"label": "com.goliatone.switchd"})
+	return nil
+}
+
+type DaemonRunCmd struct{}
+
+func (c *DaemonRunCmd) Run(_ *runContext) error {
+	return app.DaemonRun()
+}
+
 type HelpCmd struct {
 	Path []string `arg:"" optional:"" help:"Command path to show help for."`
 }
@@ -646,8 +751,9 @@ func (c *HelpCmd) Run(r *runContext) error {
 }
 
 type outputOptions struct {
-	Quiet bool
-	JSON  bool
+	CommandName string
+	Quiet       bool
+	JSON        bool
 }
 
 type cliOutput struct {
@@ -721,7 +827,7 @@ func (o cliOutput) warn(msg string, fields map[string]any) {
 func (o cliOutput) commandError(command string, err error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
-		command = "switchd"
+		command = commandName(o.opts.CommandName)
 	}
 
 	if o.opts.JSON {
@@ -946,16 +1052,30 @@ func switchboardAppSessionLabel(a switchboard.App) string {
 	return "none"
 }
 
-func main() {
-	cli := CLI{}
-	parser, err := kong.New(
-		&cli,
-		kong.Name("switchd"),
+func commandName(raw string) string {
+	name := filepath.Base(strings.TrimSpace(raw))
+	if name == "" || name == "." || name == string(os.PathSeparator) {
+		return defaultCommandName
+	}
+	return name
+}
+
+func newParser(cli *CLI, rawCommandName string) (*kong.Kong, error) {
+	name := commandName(rawCommandName)
+	return kong.New(
+		cli,
+		kong.Name(name),
 		kong.Description("manage *.test local DNS + Caddy routes (switchboard-hub)"),
 		kong.UsageOnError(),
 	)
+}
+
+func main() {
+	cli := CLI{}
+	invokedName := commandName(os.Args[0])
+	parser, err := newParser(&cli, invokedName)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "switchd error:", err)
+		fmt.Fprintf(os.Stderr, "%s error: %v\n", invokedName, err)
 		os.Exit(1)
 	}
 
@@ -974,8 +1094,9 @@ func main() {
 	rc := &runContext{
 		parser: parser,
 		out: cliOutput{opts: outputOptions{
-			Quiet: cli.Quiet,
-			JSON:  cli.useJSON(),
+			CommandName: invokedName,
+			Quiet:       cli.Quiet,
+			JSON:        cli.useJSON(),
 		}},
 		client: switchboard.Default(),
 	}
