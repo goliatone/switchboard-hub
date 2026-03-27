@@ -407,6 +407,12 @@ func Status() error {
 		default:
 			fmt.Printf("- Service: installed=%s running=%s ready=%s\n", yesNo(serviceStatus.Installed), yesNo(false), yesNo(serviceStatus.Ready))
 		}
+		if len(serviceStatus.MissingEnvVars) > 0 {
+			fmt.Printf("  Missing env for background resume: %s\n", strings.Join(serviceStatus.MissingEnvVars, ", "))
+			if strings.TrimSpace(serviceStatus.EnvFilePath) != "" {
+				fmt.Printf("  Add them to: %s\n", serviceStatus.EnvFilePath)
+			}
+		}
 	}
 
 	if err := validateTLSConfig(c); err != nil {
