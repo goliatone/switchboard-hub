@@ -198,6 +198,8 @@ function go:build:versioned {
 function install:local {
     local build_path="./bin/$BINAME"
     local install_path="/usr/local/bin/$BINAME"
+    local alias_name="sbd"
+    local alias_path="/usr/local/bin/$alias_name"
 
     lgr I "Installing $BINAME to /usr/local/bin..."
 
@@ -213,11 +215,22 @@ function install:local {
         return 1
     fi
 
+    if ! sudo ln -sfn "$install_path" "$alias_path"; then
+        lgr E "Install failed - could not create alias $alias_path"
+        return 1
+    fi
+
     lgr OK "$BINAME installed to /usr/local/bin"
+    lgr OK "$alias_name alias installed to /usr/local/bin"
 
     # Verify installation and print version metadata from installed binary
     if [ ! -x "$install_path" ]; then
         lgr E "Installation failed - $install_path is missing or not executable"
+        return 1
+    fi
+
+    if [ ! -L "$alias_path" ]; then
+        lgr E "Installation failed - $alias_path is not a symlink"
         return 1
     fi
 
@@ -226,9 +239,19 @@ function install:local {
         return 1
     fi
 
+    if ! command -v "$alias_name" &> /dev/null; then
+        lgr E "Installation failed - $alias_name not found in PATH"
+        return 1
+    fi
+
     lgr I "Installation verified - $BINAME is available globally"
     if ! "$install_path" version; then
         lgr E "Installation failed - could not execute $install_path"
+        return 1
+    fi
+
+    if ! "$alias_path" version; then
+        lgr E "Installation failed - could not execute $alias_path"
         return 1
     fi
 }
