@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,266 +42,31 @@ type TunnelInitOptions struct {
 }
 
 func TunnelProviders() []string {
-	return providerRegistryFactory().Providers()
+	return DefaultService().TunnelProviders()
 }
 
 func TunnelInit(providerName string) error {
-	return TunnelInitWithOptions(providerName, TunnelInitOptions{})
+	return DefaultService().TunnelInit(providerName)
 }
 
 func TunnelInitWithOptions(providerName string, opts TunnelInitOptions) error {
-	p, c, err := loadConfigWithPath()
-	if err != nil {
-		return err
-	}
-	providerName, err = resolveProviderName(c, providerName)
-	if err != nil {
-		return err
-	}
-	pr, err := providerRegistryFactory().Resolve(providerName)
-	if err != nil {
-		return actionableProviderResolveError(providerName, err)
-	}
-
-	if err := applyTunnelInitOptions(c, p, providerName, opts); err != nil {
-		return err
-	}
-	runInit := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		return pr.Init(ctx, tunnelProviderConfig(c, providerName))
-	}
-	if err := runInit(); err != nil {
-		if shouldAttemptCloudflareSetup(c, providerName, opts, err) {
-			if opts.NonInteractive {
-				return fmt.Errorf("%w (setup skipped: --non-interactive enabled)", err)
-			}
-			if !stdioIsInteractive() {
-				return fmt.Errorf("%w (setup skipped: interactive terminal required)", err)
-			}
-			if loginErr := runCloudflaredTunnelLogin(); loginErr != nil {
-				return loginErr
-			}
-			if err := runInit(); err != nil {
-				return err
-			}
-		} else {
-			return err
-		}
-	}
-
-	enableProvider(c, providerName)
-	if err := config.Save(p, c); err != nil {
-		return err
-	}
-	return nil
+	return DefaultService().TunnelInitWithOptions(providerName, opts)
 }
 
 func TunnelStatus(providerName string) ([]TunnelProviderStatus, error) {
-	_, c, err := loadConfigWithPath()
-	if err != nil {
-		return nil, err
-	}
-	reg := providerRegistryFactory()
-	names := reg.Providers()
-	if strings.TrimSpace(providerName) != "" {
-		names = []string{strings.ToLower(strings.TrimSpace(providerName))}
-	}
-
-	out := make([]TunnelProviderStatus, 0, len(names))
-	for _, name := range names {
-		pr, err := reg.Resolve(name)
-		if err != nil {
-			out = append(out, TunnelProviderStatus{
-				Name:      name,
-				Enabled:   providerEnabled(c, name),
-				Available: false,
-				Err:       err.Error(),
-			})
-			continue
-		}
-		caps := pr.Capabilities()
-		st := TunnelProviderStatus{
-			Name:          name,
-			Enabled:       providerEnabled(c, name),
-			OAuthSuitable: caps.OAuthSuitable,
-			Notes:         caps.Notes,
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err = pr.Init(ctx, tunnelProviderConfig(c, name))
-		cancel()
-		if err != nil {
-			st.Available = false
-			st.Err = err.Error()
-		} else {
-			st.Available = true
-		}
-		out = append(out, st)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	return DefaultService().TunnelStatus(providerName)
 }
 
 func ExposeApp(name, providerName, publicHost string) error {
-	p, c, err := loadConfigWithPath()
-	if err != nil {
-		return err
-	}
-	idx, appName, err := appIndexByName(c, name)
-	if err != nil {
-		return err
-	}
-	providerName, err = resolveProviderName(c, providerName)
-	if err != nil {
-		return err
-	}
-	host, err := resolveExposePublicHost(c, providerName, appName, publicHost)
-	if err != nil {
-		return err
-	}
-
-	pr, err := providerRegistryFactory().Resolve(providerName)
-	if err != nil {
-		return actionableProviderResolveError(providerName, err)
-	}
-	if err := initProviderWithConfig(pr, c, providerName, 20*time.Second); err != nil {
-		return err
-	}
-	localURL := fmt.Sprintf("http://127.0.0.1:%d", c.Apps[idx].LocalPort)
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-	defer cancel()
-	ep, err := pr.EnsureEndpoint(ctx, tunnel.EndpointRequest{
-		Name:       appName,
-		PublicHost: host,
-		LocalURL:   localURL,
-		Metadata: map[string]string{
-			"app": appName,
-		},
-	})
-	if err != nil {
-		return err
-	}
-
-	c.Apps[idx].PublicEndpoint.Provider = ep.Provider
-	c.Apps[idx].PublicEndpoint.Host = ep.Host
-	c.Apps[idx].PublicEndpoint.EndpointID = ep.ID
-	c.Apps[idx].PublicEndpoint.ActiveSessionID = ""
-	c.Apps[idx].PublicEndpoint.ActiveSessionPID = 0
-	c.Apps[idx].PublicEndpoint.ActiveSessionStarted = ""
-	enableProvider(c, providerName)
-
-	if err := config.Save(p, c); err != nil {
-		return err
-	}
-	return nil
+	return DefaultService().ExposeApp(name, providerName, publicHost)
 }
 
 func AppUp(name string) error {
-	p, c, err := loadConfigWithPath()
-	if err != nil {
-		return err
-	}
-	idx, _, err := appIndexByName(c, name)
-	if err != nil {
-		return err
-	}
-	a := c.Apps[idx]
-	upsertLegacyRoute(c, a.LocalHost, a.LocalPort)
-	if err := config.Save(p, c); err != nil {
-		return err
-	}
-	if err := Apply(); err != nil {
-		return err
-	}
-
-	if strings.TrimSpace(a.PublicEndpoint.Provider) == "" || strings.TrimSpace(a.PublicEndpoint.EndpointID) == "" {
-		return nil
-	}
-	pr, err := providerRegistryFactory().Resolve(a.PublicEndpoint.Provider)
-	if err != nil {
-		return actionableProviderResolveError(a.PublicEndpoint.Provider, err)
-	}
-	if err := initProviderWithConfig(pr, c, a.PublicEndpoint.Provider, 20*time.Second); err != nil {
-		return err
-	}
-	if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		status, statusErr := pr.Status(ctx, a.PublicEndpoint.EndpointID)
-		cancel()
-		if statusErr == nil && status.Ready {
-			diag.Debugf("app up: session already active for %s: %s", a.Name, status.Message)
-			return nil
-		}
-		if statusErr != nil {
-			diag.Debugf("app up: stale session for %s, status error: %v", a.Name, statusErr)
-		} else {
-			diag.Debugf("app up: stale session for %s, status not ready: %s", a.Name, status.Message)
-		}
-		c.Apps[idx].PublicEndpoint.ActiveSessionID = ""
-		c.Apps[idx].PublicEndpoint.ActiveSessionPID = 0
-		c.Apps[idx].PublicEndpoint.ActiveSessionStarted = ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-	session, err := pr.Start(ctx, tunnel.StartRequest{
-		Endpoint: tunnel.Endpoint{
-			ID:       a.PublicEndpoint.EndpointID,
-			Provider: a.PublicEndpoint.Provider,
-			Host:     a.PublicEndpoint.Host,
-			Name:     a.Name,
-		},
-		LocalURL: fmt.Sprintf("http://127.0.0.1:%d", a.LocalPort),
-	})
-	if err != nil {
-		return err
-	}
-
-	c.Apps[idx].PublicEndpoint.ActiveSessionID = session.ID
-	c.Apps[idx].PublicEndpoint.ActiveSessionPID = session.PID
-	c.Apps[idx].PublicEndpoint.ActiveSessionStarted = session.StartedAt.UTC().Format(time.RFC3339)
-	if err := config.Save(p, c); err != nil {
-		return err
-	}
-	return nil
+	return DefaultService().AppUp(name)
 }
 
 func AppDown(name string) error {
-	p, c, err := loadConfigWithPath()
-	if err != nil {
-		return err
-	}
-	idx, _, err := appIndexByName(c, name)
-	if err != nil {
-		return err
-	}
-	a := c.Apps[idx]
-	sessionID := strings.TrimSpace(a.PublicEndpoint.ActiveSessionID)
-	if sessionID == "" {
-		return nil
-	}
-	providerName := strings.TrimSpace(a.PublicEndpoint.Provider)
-	if providerName == "" {
-		providerName = strings.TrimSpace(c.Tunnel.DefaultProvider)
-	}
-	pr, err := providerRegistryFactory().Resolve(providerName)
-	if err != nil {
-		return actionableProviderResolveError(providerName, err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := pr.Stop(ctx, sessionID); err != nil {
-		if !isIdempotentStopError(err) {
-			return err
-		}
-		diag.Debugf("app down: ignoring stop error for session %s: %v", sessionID, err)
-	}
-	c.Apps[idx].PublicEndpoint.ActiveSessionID = ""
-	c.Apps[idx].PublicEndpoint.ActiveSessionPID = 0
-	c.Apps[idx].PublicEndpoint.ActiveSessionStarted = ""
-	if err := config.Save(p, c); err != nil {
-		return err
-	}
-	return nil
+	return DefaultService().AppDown(name)
 }
 
 func loadConfigWithPath() (string, *config.Config, error) {
