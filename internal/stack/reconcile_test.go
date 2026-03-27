@@ -176,6 +176,154 @@ func TestUpFailsOnUnmanagedCollision(t *testing.T) {
 	}
 }
 
+func TestDownStopsManagedSessionsDespiteDesiredCollision(t *testing.T) {
+	service, stackPath, cfgPath := setupStackService(t)
+
+	if _, err := Up(service, stackPath); err != nil {
+		t.Fatalf("Up returned error: %v", err)
+	}
+
+	collidingStack := `
+version: 1
+name: carina
+defaults:
+  provider: mock
+  expose: true
+  up: true
+services:
+  - name: app
+    local_port: 8383
+    local_host: legacy.test
+    public_host: app.carina.getctx.com
+  - name: simulator
+    local_port: 8090
+    public_host: carina.getctx.com
+`
+	if err := os.WriteFile(stackPath, []byte(collidingStack), 0o644); err != nil {
+		t.Fatalf("write colliding stack: %v", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	cfg.Apps = append(cfg.Apps, config.App{
+		Name:      "legacy",
+		LocalHost: "legacy.test",
+		LocalPort: 3000,
+		Metadata:  map[string]string{},
+	})
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	report, err := Down(service, stackPath)
+	if err != nil {
+		t.Fatalf("Down returned error: %v", err)
+	}
+	if !report.HasUnsafe {
+		t.Fatalf("expected collision to still be reported, got %#v", report)
+	}
+
+	cfg, err = config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load after down returned error: %v", err)
+	}
+	for _, appCfg := range cfg.Apps {
+		if appCfg.Metadata["managed_by"] != "stack" {
+			continue
+		}
+		if appCfg.PublicEndpoint.ActiveSessionID != "" {
+			t.Fatalf("expected managed session to be stopped, got %#v", appCfg.PublicEndpoint)
+		}
+	}
+}
+
+func TestUpRemovesStaleRouteWhenManagedLocalHostChanges(t *testing.T) {
+	service, stackPath, cfgPath := setupStackService(t)
+
+	if _, err := Up(service, stackPath); err != nil {
+		t.Fatalf("first Up returned error: %v", err)
+	}
+
+	updatedStack := `
+version: 1
+name: carina
+defaults:
+  provider: mock
+  expose: true
+  up: true
+services:
+  - name: app
+    local_port: 8383
+    local_host: web.test
+    public_host: app.carina.getctx.com
+  - name: simulator
+    local_port: 8090
+    public_host: carina.getctx.com
+`
+	if err := os.WriteFile(stackPath, []byte(updatedStack), 0o644); err != nil {
+		t.Fatalf("write updated stack: %v", err)
+	}
+
+	if _, err := Up(service, stackPath); err != nil {
+		t.Fatalf("second Up returned error: %v", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if routeExists(cfg, "carina-app.test") {
+		t.Fatalf("expected stale route to be removed: %#v", cfg.Routes)
+	}
+	if !routeExists(cfg, "web.test") {
+		t.Fatalf("expected updated route to exist: %#v", cfg.Routes)
+	}
+}
+
+func TestPlanDoesNotStartTunnelWhenExposeFalse(t *testing.T) {
+	service, stackPath, cfgPath := setupStackService(t)
+
+	stackYAML := `
+version: 1
+name: carina
+defaults:
+  expose: false
+  up: true
+services:
+  - name: app
+    local_port: 8383
+`
+	if err := os.WriteFile(stackPath, []byte(stackYAML), 0o644); err != nil {
+		t.Fatalf("write stack: %v", err)
+	}
+
+	report, err := Plan(service, stackPath)
+	if err != nil {
+		t.Fatalf("Plan returned error: %v", err)
+	}
+	for _, action := range report.Services[0].Actions {
+		if action.Type == "start_tunnel" || action.Type == "expose_endpoint" {
+			t.Fatalf("unexpected tunnel action in plan: %#v", report.Services[0].Actions)
+		}
+	}
+
+	if _, err := Up(service, stackPath); err != nil {
+		t.Fatalf("Up returned error: %v", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.Apps) != 1 {
+		t.Fatalf("expected one app, got %d", len(cfg.Apps))
+	}
+	if cfg.Apps[0].PublicEndpoint.EndpointID != "" || cfg.Apps[0].PublicEndpoint.ActiveSessionID != "" {
+		t.Fatalf("expected no endpoint/session when expose=false, got %#v", cfg.Apps[0].PublicEndpoint)
+	}
+}
+
 func setupStackService(t *testing.T) (*app.Service, string, string) {
 	t.Helper()
 
@@ -240,4 +388,13 @@ outputs:
 		},
 	})
 	return service, stackPath, cfgPath
+}
+
+func routeExists(cfg *config.Config, host string) bool {
+	for _, route := range cfg.Routes {
+		if route.Host == host {
+			return true
+		}
+	}
+	return false
 }

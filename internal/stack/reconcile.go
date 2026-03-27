@@ -55,6 +55,12 @@ type Report struct {
 	HasUnsafe  bool            `json:"has_unsafe"`
 }
 
+type managedAppUpdate struct {
+	Changed        bool
+	PreviousHost   string
+	CurrentAppName string
+}
+
 func LoadResolved(service *app.Service, path string) (*ResolvedStack, *config.Config, string, error) {
 	st, err := LoadFile(path)
 	if err != nil {
@@ -108,7 +114,11 @@ func Up(service *app.Service, path string) (*Report, error) {
 		if status != nil && status.Collision != "" {
 			continue
 		}
-		if ensureManagedApp(cfg, resolved, svc, path) {
+		update := ensureManagedApp(cfg, resolved, svc, path)
+		if update.Changed {
+			appOrRouteChanged = true
+		}
+		if removeRouteIfUnused(cfg, update.PreviousHost) {
 			appOrRouteChanged = true
 		}
 		if ensureRoute(cfg, svc.LocalHost, svc.LocalPort) {
@@ -177,17 +187,17 @@ func Down(service *app.Service, path string) (*Report, error) {
 		return nil, err
 	}
 	planned := buildReport(resolved, cfg, path)
-	if planned.HasUnsafe {
-		return planned, unsafeReportError(planned)
-	}
 
 	changed := false
 	for _, svc := range resolved.Services {
-		status := findServiceStatus(planned, svc.Name)
-		if status == nil || status.Collision != "" || !status.SessionActive {
+		idx, actual, err := managedAppForService(cfg, resolved.Stack.Name, svc.Name)
+		if err != nil {
+			return planned, err
+		}
+		if idx < 0 || strings.TrimSpace(actual.PublicEndpoint.ActiveSessionID) == "" {
 			continue
 		}
-		if _, err := service.StopAppRuntime(cfg, svc.GeneratedAppName); err != nil {
+		if _, err := service.StopAppRuntime(cfg, actual.Name); err != nil {
 			return nil, err
 		}
 		changed = true
@@ -277,7 +287,7 @@ func inspectService(resolved *ResolvedStack, cfg *config.Config, svc ResolvedSer
 	if svc.Expose {
 		status.Actions = append(status.Actions, Action{Type: "expose_endpoint", Service: svc.Name, Description: "expose public endpoint"})
 	}
-	if svc.Up {
+	if shouldManageSession(svc) {
 		status.Actions = append(status.Actions, Action{Type: "start_tunnel", Service: svc.Name, Description: "start runtime session"})
 	}
 	return status
@@ -326,7 +336,7 @@ func addManagedDrift(status *ServiceStatus, cfg *config.Config, svc ResolvedServ
 			status.Actions = append(status.Actions, Action{Type: "expose_endpoint", Service: svc.Name, Description: "create public endpoint"})
 		}
 	}
-	if svc.Up && strings.TrimSpace(actual.PublicEndpoint.ActiveSessionID) == "" {
+	if shouldManageSession(svc) && strings.TrimSpace(actual.PublicEndpoint.ActiveSessionID) == "" {
 		status.Drift = append(status.Drift, "session")
 		status.Actions = append(status.Actions, Action{Type: "start_tunnel", Service: svc.Name, Description: "start runtime session"})
 	}
@@ -425,7 +435,32 @@ func ensureRoute(cfg *config.Config, host string, port int) bool {
 	return true
 }
 
-func ensureManagedApp(cfg *config.Config, resolved *ResolvedStack, svc ResolvedService, stackFile string) bool {
+func removeRouteIfUnused(cfg *config.Config, host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	for _, candidate := range cfg.Apps {
+		if strings.EqualFold(candidate.LocalHost, host) {
+			return false
+		}
+	}
+	out := make([]config.Route, 0, len(cfg.Routes))
+	removed := false
+	for _, route := range cfg.Routes {
+		if strings.EqualFold(route.Host, host) {
+			removed = true
+			continue
+		}
+		out = append(out, route)
+	}
+	if removed {
+		cfg.Routes = out
+	}
+	return removed
+}
+
+func ensureManagedApp(cfg *config.Config, resolved *ResolvedStack, svc ResolvedService, stackFile string) managedAppUpdate {
 	indexes := findManagedIndexes(cfg, resolved.Stack.Name, svc.Name)
 	meta := map[string]string{
 		metadataManagedBy: "stack",
@@ -435,18 +470,23 @@ func ensureManagedApp(cfg *config.Config, resolved *ResolvedStack, svc ResolvedS
 	}
 	if len(indexes) == 1 {
 		idx := indexes[0]
-		changed := false
+		update := managedAppUpdate{
+			CurrentAppName: cfg.Apps[idx].Name,
+		}
+		if cfg.Apps[idx].LocalHost != svc.LocalHost {
+			update.PreviousHost = cfg.Apps[idx].LocalHost
+		}
 		if cfg.Apps[idx].Name != svc.GeneratedAppName {
 			cfg.Apps[idx].Name = svc.GeneratedAppName
-			changed = true
+			update.Changed = true
 		}
 		if cfg.Apps[idx].LocalHost != svc.LocalHost {
 			cfg.Apps[idx].LocalHost = svc.LocalHost
-			changed = true
+			update.Changed = true
 		}
 		if cfg.Apps[idx].LocalPort != svc.LocalPort {
 			cfg.Apps[idx].LocalPort = svc.LocalPort
-			changed = true
+			update.Changed = true
 		}
 		if cfg.Apps[idx].Metadata == nil {
 			cfg.Apps[idx].Metadata = map[string]string{}
@@ -454,11 +494,12 @@ func ensureManagedApp(cfg *config.Config, resolved *ResolvedStack, svc ResolvedS
 		for k, v := range meta {
 			if cfg.Apps[idx].Metadata[k] != v {
 				cfg.Apps[idx].Metadata[k] = v
-				changed = true
+				update.Changed = true
 			}
 		}
 		sort.Slice(cfg.Apps, func(i, j int) bool { return cfg.Apps[i].Name < cfg.Apps[j].Name })
-		return changed
+		update.CurrentAppName = svc.GeneratedAppName
+		return update
 	}
 
 	cfg.Apps = append(cfg.Apps, config.App{
@@ -468,7 +509,10 @@ func ensureManagedApp(cfg *config.Config, resolved *ResolvedStack, svc ResolvedS
 		Metadata:  meta,
 	})
 	sort.Slice(cfg.Apps, func(i, j int) bool { return cfg.Apps[i].Name < cfg.Apps[j].Name })
-	return true
+	return managedAppUpdate{
+		Changed:        true,
+		CurrentAppName: svc.GeneratedAppName,
+	}
 }
 
 func findOrphans(resolved *ResolvedStack, cfg *config.Config) []ManagedOrphan {
@@ -507,6 +551,17 @@ func findServiceStatus(report *Report, name string) *ServiceStatus {
 	return nil
 }
 
+func managedAppForService(cfg *config.Config, stackName, serviceName string) (int, config.App, error) {
+	indexes := findManagedIndexes(cfg, stackName, serviceName)
+	if len(indexes) > 1 {
+		return -1, config.App{}, fmt.Errorf("ambiguous stack-managed apps for %s/%s", stackName, serviceName)
+	}
+	if len(indexes) == 0 {
+		return -1, config.App{}, nil
+	}
+	return indexes[0], cfg.Apps[indexes[0]], nil
+}
+
 func needsExpose(status *ServiceStatus) bool {
 	if status == nil {
 		return false
@@ -529,6 +584,10 @@ func needsStart(status *ServiceStatus) bool {
 		}
 	}
 	return false
+}
+
+func shouldManageSession(svc ResolvedService) bool {
+	return svc.Expose && svc.Up
 }
 
 func unsafeReportError(report *Report) error {

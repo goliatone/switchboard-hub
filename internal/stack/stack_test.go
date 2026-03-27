@@ -317,6 +317,23 @@ services:
 	}
 }
 
+func TestResolveRejectsDerivedLocalHostCollision(t *testing.T) {
+	st := mustLoadStack(t, []byte(`
+version: 1
+name: carina
+services:
+  - name: app
+    local_port: 8383
+  - name: simulator
+    local_port: 8090
+    local_host: carina-app.test
+`))
+
+	if _, err := st.Resolve("test"); err == nil || !strings.Contains(err.Error(), "duplicate local_host") {
+		t.Fatalf("expected duplicate local_host error, got %v", err)
+	}
+}
+
 func mustLoadStack(t *testing.T, yaml []byte) *Stack {
 	t.Helper()
 	st, err := LoadBytes(yaml)
