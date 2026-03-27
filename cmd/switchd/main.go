@@ -14,6 +14,7 @@ import (
 	"github.com/goliatone/switchboard-hub/internal/config"
 	"github.com/goliatone/switchboard-hub/internal/diag"
 	"github.com/goliatone/switchboard-hub/internal/tunnel"
+	"github.com/goliatone/switchboard-hub/pkg/switchboard"
 )
 
 var (
@@ -44,6 +45,7 @@ type CLI struct {
 
 	Init      InitCmd      `cmd:"" help:"Initialize switchd local DNS + Caddy setup."`
 	App       AppCmd       `cmd:"" help:"Manage app definitions and tunnel exposure."`
+	Stack     StackCmd     `cmd:"" help:"Manage declarative stacks."`
 	Tunnel    TunnelCmd    `cmd:"" help:"Manage tunnel providers."`
 	Add       AddCmd       `cmd:"" help:"Add a route."`
 	Rm        RmCmd        `cmd:"" help:"Remove a route."`
@@ -98,12 +100,12 @@ func (c *AppCreateCmd) Run(r *runContext) error {
 	if c.Port <= 0 || c.Port > 65535 {
 		return fmt.Errorf("--port must be 1..65535")
 	}
-	if err := app.CreateApp(c.NameOrHost, c.Port); err != nil {
+	if err := r.client.CreateApp(c.NameOrHost, c.Port); err != nil {
 		return err
 	}
-	apps, err := app.ListApps()
+	apps, err := r.client.ListApps()
 	if err == nil {
-		if created, ok := findAppByInput(apps, c.NameOrHost); ok {
+		if created, ok := findSwitchboardAppByInput(apps, c.NameOrHost); ok {
 			r.out.ok("App created", map[string]any{
 				"app":   created.Name,
 				"local": created.LocalHost,
@@ -121,7 +123,7 @@ type AppRmCmd struct {
 }
 
 func (c *AppRmCmd) Run(r *runContext) error {
-	if err := app.RemoveApp(c.Name); err != nil {
+	if err := r.client.RemoveApp(c.Name); err != nil {
 		return err
 	}
 	r.out.ok("App removed", map[string]any{"app": c.Name})
@@ -131,7 +133,7 @@ func (c *AppRmCmd) Run(r *runContext) error {
 type AppLsCmd struct{}
 
 func (c *AppLsCmd) Run(r *runContext) error {
-	apps, err := app.ListApps()
+	apps, err := r.client.ListApps()
 	if err != nil {
 		return err
 	}
@@ -159,7 +161,7 @@ func (c *AppLsCmd) Run(r *runContext) error {
 			fmt.Sprintf("%d", a.LocalPort),
 			public,
 			oauth,
-			appSessionLabel(a),
+			switchboardAppSessionLabel(a),
 		})
 	}
 	r.out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, rows)
@@ -173,12 +175,12 @@ type AppExposeCmd struct {
 }
 
 func (c *AppExposeCmd) Run(r *runContext) error {
-	if err := app.ExposeApp(c.Name, c.Provider, c.PublicHost); err != nil {
+	if err := r.client.ExposeApp(c.Name, c.Provider, c.PublicHost); err != nil {
 		return err
 	}
-	apps, err := app.ListApps()
+	apps, err := r.client.ListApps()
 	if err == nil {
-		if exposed, ok := findAppByInput(apps, c.Name); ok {
+		if exposed, ok := findSwitchboardAppByInput(apps, c.Name); ok {
 			r.out.ok("Public endpoint configured", map[string]any{
 				"app":         exposed.Name,
 				"provider":    exposed.PublicEndpoint.Provider,
@@ -197,12 +199,12 @@ type AppUpCmd struct {
 }
 
 func (c *AppUpCmd) Run(r *runContext) error {
-	if err := app.AppUp(c.Name); err != nil {
+	if err := r.client.AppUp(c.Name); err != nil {
 		return err
 	}
-	apps, err := app.ListApps()
+	apps, err := r.client.ListApps()
 	if err == nil {
-		if runtime, ok := findAppByInput(apps, c.Name); ok {
+		if runtime, ok := findSwitchboardAppByInput(apps, c.Name); ok {
 			fields := map[string]any{
 				"app":         runtime.Name,
 				"local_url":   fmt.Sprintf("http://%s", runtime.LocalHost),
@@ -224,14 +226,14 @@ type AppDownCmd struct {
 }
 
 func (c *AppDownCmd) Run(r *runContext) error {
-	beforeApps, _ := app.ListApps()
-	before, _ := findAppByInput(beforeApps, c.Name)
-	if err := app.AppDown(c.Name); err != nil {
+	beforeApps, _ := r.client.ListApps()
+	before, _ := findSwitchboardAppByInput(beforeApps, c.Name)
+	if err := r.client.AppDown(c.Name); err != nil {
 		return err
 	}
-	afterApps, err := app.ListApps()
+	afterApps, err := r.client.ListApps()
 	if err == nil {
-		if after, ok := findAppByInput(afterApps, c.Name); ok {
+		if after, ok := findSwitchboardAppByInput(afterApps, c.Name); ok {
 			if strings.TrimSpace(before.PublicEndpoint.ActiveSessionID) == "" {
 				r.out.warn("App tunnel already stopped", map[string]any{"app": after.Name})
 				return nil
@@ -322,10 +324,91 @@ type TunnelCmd struct {
 	Status    TunnelStatusCmd    `cmd:"" name:"status" help:"Show tunnel provider health/status."`
 }
 
+type StackCmd struct {
+	Plan   StackPlanCmd   `cmd:"" help:"Show stack reconciliation plan."`
+	Up     StackUpCmd     `cmd:"" help:"Reconcile stack and start managed runtime sessions."`
+	Down   StackDownCmd   `cmd:"" help:"Stop runtime sessions for stack services."`
+	Status StackStatusCmd `cmd:"" help:"Show stack desired vs actual status."`
+	Env    StackEnvCmd    `cmd:"" help:"Render stack outputs as KEY=value lines."`
+}
+
+type StackPlanCmd struct {
+	File string `name:"file" short:"f" required:"" help:"Stack file path."`
+}
+
+func (c *StackPlanCmd) Run(r *runContext) error {
+	report, err := r.client.StackPlan(c.File)
+	if err != nil {
+		return err
+	}
+	return r.renderStackReport("plan", report)
+}
+
+type StackUpCmd struct {
+	File string `name:"file" short:"f" required:"" help:"Stack file path."`
+}
+
+func (c *StackUpCmd) Run(r *runContext) error {
+	report, err := r.client.StackUp(c.File)
+	if err != nil {
+		if report.StackName != "" {
+			_ = r.renderStackReport("up", report)
+		}
+		return err
+	}
+	return r.renderStackReport("up", report)
+}
+
+type StackDownCmd struct {
+	File string `name:"file" short:"f" required:"" help:"Stack file path."`
+}
+
+func (c *StackDownCmd) Run(r *runContext) error {
+	report, err := r.client.StackDown(c.File)
+	if err != nil {
+		if report.StackName != "" {
+			_ = r.renderStackReport("down", report)
+		}
+		return err
+	}
+	return r.renderStackReport("down", report)
+}
+
+type StackStatusCmd struct {
+	File string `name:"file" short:"f" required:"" help:"Stack file path."`
+}
+
+func (c *StackStatusCmd) Run(r *runContext) error {
+	report, err := r.client.StackStatus(c.File)
+	if err != nil {
+		return err
+	}
+	return r.renderStackReport("status", report)
+}
+
+type StackEnvCmd struct {
+	File string `name:"file" short:"f" required:"" help:"Stack file path."`
+}
+
+func (c *StackEnvCmd) Run(r *runContext) error {
+	lines, err := r.client.RenderStackEnv(c.File)
+	if err != nil {
+		return err
+	}
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, map[string]any{"env": lines, "count": len(lines)})
+		return nil
+	}
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	return nil
+}
+
 type TunnelProvidersCmd struct{}
 
 func (c *TunnelProvidersCmd) Run(r *runContext) error {
-	providers := app.TunnelProviders()
+	providers := r.client.TunnelProviders()
 	if r.out.opts.JSON {
 		r.out.jsonOut(os.Stdout, map[string]any{"providers": providers, "count": len(providers)})
 		return nil
@@ -351,7 +434,7 @@ type TunnelInitCmd struct {
 }
 
 func (c *TunnelInitCmd) Run(r *runContext) error {
-	if err := app.TunnelInitWithOptions(c.Provider, app.TunnelInitOptions{
+	if err := r.client.TunnelInit(c.Provider, switchboard.TunnelInitOptions{
 		Setup:          c.Setup,
 		NonInteractive: c.NonInteractive,
 		OriginCert:     c.OriginCert,
@@ -372,7 +455,7 @@ type TunnelStatusCmd struct {
 }
 
 func (c *TunnelStatusCmd) Run(r *runContext) error {
-	statuses, err := app.TunnelStatus(c.Provider)
+	statuses, err := r.client.TunnelStatus(c.Provider)
 	if err != nil {
 		return err
 	}
@@ -735,6 +818,65 @@ func (o cliOutput) printTable(headers []string, rows [][]string) {
 type runContext struct {
 	parser *kong.Kong
 	out    cliOutput
+	client *switchboard.Client
+}
+
+func (r *runContext) renderStackReport(command string, report switchboard.StackReport) error {
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, map[string]any{"stack": report, "command": command})
+		return nil
+	}
+	fmt.Printf("stack: %s\n", report.StackName)
+	fmt.Printf("file:  %s\n", report.StackFile)
+	rows := make([][]string, 0, len(report.Services))
+	for _, svc := range report.Services {
+		publicHost := svc.ActualPublicHost
+		if publicHost == "" {
+			publicHost = svc.DesiredPublicHost
+		}
+		if publicHost == "" {
+			publicHost = "-"
+		}
+		drift := "-"
+		if len(svc.Drift) > 0 {
+			drift = strings.Join(svc.Drift, ",")
+		}
+		actionNames := make([]string, 0, len(svc.Actions))
+		for _, action := range svc.Actions {
+			actionNames = append(actionNames, action.Type)
+		}
+		if len(actionNames) == 0 {
+			actionNames = []string{"no_op"}
+		}
+		session := "idle"
+		if svc.SessionActive {
+			session = "active"
+		}
+		if svc.Collision != "" {
+			session = "collision"
+		}
+		rows = append(rows, []string{
+			svc.Name,
+			svc.GeneratedAppName,
+			svc.LocalHost,
+			fmt.Sprintf("%d", svc.LocalPort),
+			publicHost,
+			valueOrDash(svc.Provider),
+			session,
+			drift,
+			strings.Join(actionNames, ","),
+		})
+	}
+	r.out.printTable([]string{"SERVICE", "APP", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "PROVIDER", "SESSION", "DRIFT", "ACTIONS"}, rows)
+	for _, svc := range report.Services {
+		if svc.Collision != "" {
+			fmt.Printf("collision %s: %s\n", svc.Name, svc.Collision)
+		}
+	}
+	for _, orphan := range report.Orphans {
+		fmt.Printf("orphan: app=%s service=%s local_host=%s public_host=%s\n", orphan.AppName, orphan.Service, valueOrDash(orphan.LocalHost), valueOrDash(orphan.PublicHost))
+	}
+	return nil
 }
 
 func findAppByInput(apps []config.App, raw string) (config.App, bool) {
@@ -753,6 +895,22 @@ func findAppByInput(apps []config.App, raw string) (config.App, bool) {
 	return config.App{}, false
 }
 
+func findSwitchboardAppByInput(apps []switchboard.App, raw string) (switchboard.App, bool) {
+	needle := strings.ToLower(strings.TrimSpace(raw))
+	needle = strings.TrimSuffix(needle, ".")
+	needle = strings.TrimPrefix(needle, "http://")
+	needle = strings.TrimPrefix(needle, "https://")
+	for _, a := range apps {
+		if strings.EqualFold(strings.TrimSpace(a.Name), needle) {
+			return a, true
+		}
+		if strings.EqualFold(strings.TrimSpace(a.LocalHost), needle) {
+			return a, true
+		}
+	}
+	return switchboard.App{}, false
+}
+
 func boolLabel(v bool) string {
 	if v {
 		return "yes"
@@ -760,7 +918,25 @@ func boolLabel(v bool) string {
 	return "no"
 }
 
+func valueOrDash(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "-"
+	}
+	return v
+}
+
 func appSessionLabel(a config.App) string {
+	if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
+		return "active"
+	}
+	if strings.TrimSpace(a.PublicEndpoint.Host) != "" {
+		return "idle"
+	}
+	return "none"
+}
+
+func switchboardAppSessionLabel(a switchboard.App) string {
 	if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
 		return "active"
 	}
@@ -801,6 +977,7 @@ func main() {
 			Quiet: cli.Quiet,
 			JSON:  cli.useJSON(),
 		}},
+		client: switchboard.Default(),
 	}
 
 	if err := ctx.Run(rc); err != nil {
