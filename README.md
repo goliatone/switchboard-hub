@@ -37,7 +37,9 @@ It configures:
 
 `switchd apply` pushes routes from config to the Caddy admin API.
 
-`switchd caddy run` starts Caddy in the foreground. Keep it running in a terminal.
+`switchd service install` installs a root `launchd` service that starts `switchd` in the background on boot.
+
+`switchd caddy run` is still available as a foreground/manual debug path.
 
 ## Requirements
 
@@ -72,6 +74,26 @@ Or plain Go build:
 go build -o switchd ./cmd/switchd
 ```
 
+## Release installs
+
+Published releases install `switchd` as the canonical command.
+
+Packaged installs also provide `sbd` as a short alias to the same binary:
+
+```bash
+switchd version
+sbd version
+```
+
+Homebrew release installs come from the `goliatone/homebrew-tap` tap:
+
+```bash
+brew tap goliatone/homebrew-tap
+brew install switchd
+```
+
+Linux release packages (`deb` and `rpm`) install `switchd` and add the `sbd` symlink automatically.
+
 ## First time setup (machine)
 
 Run once with `sudo`:
@@ -94,7 +116,20 @@ If you use internal TLS mode, trust Caddy local CA once:
 sudo caddy trust
 ```
 
-Start Caddy:
+Install and start the background service:
+
+```bash
+sudo ./build/switchd service install
+```
+
+Check service state:
+
+```bash
+./build/switchd service status
+./build/switchd status
+```
+
+Manual/foreground alternative:
 
 ```bash
 sudo ./build/switchd caddy run
@@ -130,6 +165,7 @@ Check health:
 
 ```bash
 ./build/switchd status
+./build/switchd service status
 ```
 
 ## Daily use (apps + tunnels for OAuth)
@@ -287,6 +323,7 @@ Main commands:
 - `stack plan|up|down|status|env -f <file>`
 - `app oauth enable|print --provider <provider>`
 - `tunnel providers|init|status`
+- `service install|start|stop|status|uninstall`
 - `tls mkcert`
 - `status`
 - `version`
@@ -338,7 +375,8 @@ Use one of these for later TLS changes:
 
 If `apply` fails:
 
-- Make sure `switchd caddy run` is running.
+- Make sure the background service is running: `sudo switchd service start`
+- Or run the manual foreground path: `sudo switchd caddy run`
 - Confirm Caddy admin is reachable at `http://127.0.0.1:2019`.
 
 If `*.test` does not resolve:
@@ -358,6 +396,7 @@ If tunnel commands fail:
 Remove local DNS/resolver setup:
 
 ```bash
+sudo ./build/switchd service uninstall
 sudo ./build/switchd uninstall
 sudo brew services restart dnsmasq
 sudo dscacheutil -flushcache
