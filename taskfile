@@ -411,7 +411,7 @@ function release {
 
     current_branch=$(git rev-parse --abbrev-ref HEAD)
     if [[ "${current_branch}" != "${GIT_MAIN}" ]]; then
-        log E "Release must run on ${GIT_MAIN}; current branch is ${current_branch}"
+        lgr E "Release must run on ${GIT_MAIN}; current branch is ${current_branch}"
         exit 1
     fi
 
