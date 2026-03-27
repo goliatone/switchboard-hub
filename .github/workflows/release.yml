@@ -1,4 +1,4 @@
-name: Release
+name: Release switchd
 
 on:
   push:
@@ -26,4 +26,9 @@ jobs:
           version: "~> v2"
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GO_RELEASER_HOMEBREW_TAP }}
+
+      - name: Create latest tag
+        uses: EndBug/latest-tag@latest
+        with:
+          description: "switchd latest release"
