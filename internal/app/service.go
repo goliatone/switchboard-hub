@@ -431,11 +431,23 @@ func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, e
 		return config.App{}, err
 	}
 	if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
+		if a.PublicEndpoint.ActiveSessionPID > 0 && processAlive(a.PublicEndpoint.ActiveSessionPID) {
+			return c.Apps[idx], nil
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		status, statusErr := pr.Status(ctx, a.PublicEndpoint.EndpointID)
 		cancel()
 		if statusErr == nil && status.Ready {
+			if strings.TrimSpace(status.SessionID) != "" {
+				c.Apps[idx].PublicEndpoint.ActiveSessionID = strings.TrimSpace(status.SessionID)
+			}
 			return c.Apps[idx], nil
+		}
+		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		stopErr := pr.Stop(ctx, a.PublicEndpoint.ActiveSessionID)
+		cancel()
+		if stopErr != nil && !isIdempotentStopError(stopErr) {
+			return config.App{}, stopErr
 		}
 		c.Apps[idx].PublicEndpoint.ActiveSessionID = ""
 		c.Apps[idx].PublicEndpoint.ActiveSessionPID = 0
