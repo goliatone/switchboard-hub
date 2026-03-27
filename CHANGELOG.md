@@ -1,5 +1,30 @@
 # Changelog
 
+# [0.3.0](https://github.com/goliatone/switchboard-hub/compare/v0.2.0...v0.3.0) - (2026-03-27)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- Background service installer ([7aa8065](https://github.com/goliatone/switchboard-hub/commit/7aa8065888233746a7f83a3fa95368dc5297765c))  - (goliatone)
+- Goreleaser flow ([a90266d](https://github.com/goliatone/switchboard-hub/commit/a90266d68655b4e4ded2386939c0097c2f9c5096))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.3.0 ([b21c167](https://github.com/goliatone/switchboard-hub/commit/b21c167bc9189990ef9db5ab9d5f59469030ae51))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Warning for env info ([7f3d52c](https://github.com/goliatone/switchboard-hub/commit/7f3d52ce8cf1b0a823b1c342038fc1b666edf349))  - (goliatone)
+- Log command ([9dc92da](https://github.com/goliatone/switchboard-hub/commit/9dc92da1d60fee0c175bccc47b642315b57e19db))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.2.0 ([b3d4c8b](https://github.com/goliatone/switchboard-hub/commit/b3d4c8b2883df4d90531e43cf0c3ee49b8d7f961))  - (goliatone)
+
+## <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Update readme ([69c87d0](https://github.com/goliatone/switchboard-hub/commit/69c87d0a9ce4ac8d5b770d652e0fade7b948791b))  - (goliatone)
+- Update tests ([1b07ae7](https://github.com/goliatone/switchboard-hub/commit/1b07ae725b134dc9a9563d2a73efd435385f1527))  - (goliatone)
+
 # [0.2.0](https://github.com/goliatone/switchboard-hub/compare/v0.1.0...v0.2.0) - (2026-03-27)
 
 ## <!-- 1 -->🐛 Bug Fixes
