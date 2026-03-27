@@ -12,63 +12,15 @@ import (
 )
 
 func CreateApp(nameOrHost string, port int) error {
-	p, err := cfgPath()
-	if err != nil {
-		return err
-	}
-	c, err := config.LoadOrCreateDefault(p)
-	if err != nil {
-		return err
-	}
-	if _, err := upsertApp(c, nameOrHost, port); err != nil {
-		return err
-	}
-	if err := config.Save(p, c); err != nil {
-		return err
-	}
-	return nil
+	return DefaultService().CreateApp(nameOrHost, port)
 }
 
 func RemoveApp(name string) error {
-	p, err := cfgPath()
-	if err != nil {
-		return err
-	}
-	c, err := config.LoadOrDefault(p)
-	if err != nil {
-		return err
-	}
-	name, err = normalizeAppNameInput(name)
-	if err != nil {
-		return err
-	}
-
-	idx := findAppByName(c, name)
-	if idx < 0 {
-		return fmt.Errorf("app not found: %s", name)
-	}
-	host := c.Apps[idx].LocalHost
-	c.Apps = append(c.Apps[:idx], c.Apps[idx+1:]...)
-	removeLegacyRouteByHost(c, host)
-	if err := config.Save(p, c); err != nil {
-		return err
-	}
-	return nil
+	return DefaultService().RemoveApp(name)
 }
 
 func ListApps() ([]config.App, error) {
-	p, err := cfgPath()
-	if err != nil {
-		return nil, err
-	}
-	c, err := config.LoadOrDefault(p)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]config.App, len(c.Apps))
-	copy(out, c.Apps)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	return DefaultService().ListApps()
 }
 
 func upsertApp(c *config.Config, nameOrHost string, port int) (config.App, error) {
