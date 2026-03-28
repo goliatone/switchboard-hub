@@ -56,6 +56,9 @@ changelog:
       - "^Update README"
       - "merge fix"
 
+release:
+  replace_existing_artifacts: true
+
 brews:
   - name: switchd
     repository:
