@@ -205,7 +205,7 @@ func serviceLogWithContext(ctx context.Context, opts ServiceLogOptions) error {
 			found = true
 		}
 	}
-	if !found {
+	if !found && !opts.Follow {
 		paths := make([]string, 0, len(streams))
 		for _, stream := range streams {
 			paths = append(paths, stream.path)
@@ -792,6 +792,9 @@ func startPreparedService() (LaunchdServiceStatus, error) {
 	if err != nil && !isLaunchctlNoop(err) {
 		return LaunchdServiceStatus{}, err
 	}
+	if err := prepareServiceLogFiles(); err != nil {
+		return LaunchdServiceStatus{}, err
+	}
 	_, err = launchctlRun("bootstrap", launchdServiceDomain, launchdPlistPath)
 	if err != nil && !isLaunchctlAlreadyLoaded(err) {
 		return LaunchdServiceStatus{}, err
@@ -971,6 +974,22 @@ func defaultServiceHome() string {
 	return "/var/root"
 }
 
+func prepareServiceLogFiles() error {
+	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+		return err
+	}
+	for _, path := range []string{serviceStdoutPath, serviceStderrPath} {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func readDaemonRuntimeState() (daemonRuntimeState, error) {
 	b, err := os.ReadFile(serviceStatePath)
 	if err != nil {
@@ -1068,12 +1087,32 @@ func isProcessGone(err error) bool {
 
 func defaultStartBackgroundCommand(name string, args ...string) (daemonProcess, error) {
 	cmd := exec.Command(name, args...)
+	cmd.Env = backgroundCommandEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	return &execBackgroundProcess{cmd: cmd}, nil
+}
+
+func backgroundCommandEnv() []string {
+	env := append([]string{}, os.Environ()...)
+	return ensureEnvValue(env, "HOME", defaultServiceHome())
+}
+
+func ensureEnvValue(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		if strings.TrimSpace(entry[len(prefix):]) == "" {
+			env[i] = prefix + value
+		}
+		return env
+	}
+	return append(env, prefix+value)
 }
 
 func defaultWaitForCaddyAdmin(adminBase string, timeout time.Duration) error {
