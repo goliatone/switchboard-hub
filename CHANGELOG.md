@@ -1,5 +1,25 @@
 # Changelog
 
+# [0.4.0](https://github.com/goliatone/switchboard-hub/compare/v0.3.0...v0.4.0) - (2026-03-28)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- Renew token ([95dd859](https://github.com/goliatone/switchboard-hub/commit/95dd85903a2d64e4b324af4f0da42e3bd134c01a))  - (goliatone)
+- Remove println ([374d850](https://github.com/goliatone/switchboard-hub/commit/374d850d62bca045fe75672a54c1f5f1a46f0e95))  - (goliatone)
+- Log implementation ([8e83db4](https://github.com/goliatone/switchboard-hub/commit/8e83db43ed09176f29f97f224282dd7619a567b7))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.4.0 ([8d44d00](https://github.com/goliatone/switchboard-hub/commit/8d44d00e5fca04a8a51368b4f885751bc235f31a))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.3.0 ([48a5c48](https://github.com/goliatone/switchboard-hub/commit/48a5c48d8ad972b45f60ed2f252289833ed559fe))  - (goliatone)
+
+## <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Update tests ([c37525a](https://github.com/goliatone/switchboard-hub/commit/c37525a91904415b63be14ba3cbdae77cc883be3))  - (goliatone)
+
 # [0.3.0](https://github.com/goliatone/switchboard-hub/compare/v0.2.0...v0.3.0) - (2026-03-27)
 
 ## <!-- 1 -->🐛 Bug Fixes
