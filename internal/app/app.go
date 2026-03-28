@@ -330,7 +330,6 @@ func Apply() error {
 	last := filepath.Join(dir, "last-applied.json")
 	if err := os.WriteFile(last, cfgJSON, 0o644); err == nil {
 		fixSudoOwnership(last)
-		fmt.Println("wrote:", last)
 	}
 
 	return nil
