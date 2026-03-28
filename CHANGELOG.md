@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.5.0](https://github.com/goliatone/switchboard-hub/compare/v0.4.0...v0.5.0) - (2026-03-28)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- Replace existing artifacs ([596dbf6](https://github.com/goliatone/switchboard-hub/commit/596dbf6029d05a4921294dbe3de5445de9bf75b6))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.5.0 ([a88957a](https://github.com/goliatone/switchboard-hub/commit/a88957a6d87385ba0611e1e2fada6b0f532748c8))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.4.0 ([a4d6c34](https://github.com/goliatone/switchboard-hub/commit/a4d6c34f01173dd28f05bda1852f1c9970143266))  - (goliatone)
+
 # [0.4.0](https://github.com/goliatone/switchboard-hub/compare/v0.3.0...v0.4.0) - (2026-03-28)
 
 ## <!-- 1 -->🐛 Bug Fixes
