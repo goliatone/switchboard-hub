@@ -171,12 +171,12 @@ func (s *Service) TunnelProviders() []string {
 	return s.providerRegistry.Providers()
 }
 
-func (s *Service) CreateApp(nameOrHost string, port int) error {
+func (s *Service) CreateApp(nameOrHost string, port int, dialHost string) error {
 	p, c, err := s.LoadOrCreateDefaultConfig()
 	if err != nil {
 		return err
 	}
-	if _, err := upsertApp(c, nameOrHost, port); err != nil {
+	if _, err := upsertApp(c, nameOrHost, port, dialHost); err != nil {
 		return err
 	}
 	return s.store.Save(p, c)
@@ -216,6 +216,11 @@ func (s *Service) Apply() error {
 	p, c, err := s.LoadOrDefaultConfig()
 	if err != nil {
 		return err
+	}
+	if syncRoutesFromApps(c, true) {
+		if err := s.store.Save(p, c); err != nil {
+			return err
+		}
 	}
 	return s.applyConfig(p, c)
 }
@@ -338,7 +343,7 @@ func (s *Service) AppUp(name string) error {
 		return err
 	}
 	a := c.Apps[idx]
-	upsertLegacyRoute(c, a.LocalHost, a.LocalPort)
+	upsertLegacyRoute(c, a.LocalHost, a.LocalPort, ResolveDialHost(a))
 	if err := s.store.Save(p, c); err != nil {
 		return err
 	}
@@ -386,7 +391,7 @@ func (s *Service) EnsurePublicEndpoint(c *config.Config, name, providerName, pub
 	if err := initProviderWithConfig(pr, c, providerName, 20*time.Second); err != nil {
 		return config.App{}, err
 	}
-	localURL := fmt.Sprintf("http://127.0.0.1:%d", c.Apps[idx].LocalPort)
+	localURL := LocalURLForApp(c.Apps[idx], true)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	ep, err := pr.EnsureEndpoint(ctx, tunnel.EndpointRequest{
@@ -463,7 +468,7 @@ func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, e
 			Host:     a.PublicEndpoint.Host,
 			Name:     a.Name,
 		},
-		LocalURL: fmt.Sprintf("http://127.0.0.1:%d", a.LocalPort),
+		LocalURL: LocalURLForApp(a, true),
 	})
 	if err != nil {
 		return config.App{}, err
