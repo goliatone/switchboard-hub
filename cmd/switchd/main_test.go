@@ -576,6 +576,143 @@ func TestStackPlanCommandJSON(t *testing.T) {
 	}
 }
 
+func TestBuildStackReportViewModel(t *testing.T) {
+	report := switchboard.StackReport{
+		StackName:  "carina",
+		StackFile:  "/tmp/stack.yaml",
+		HasChanges: true,
+		HasUnsafe:  true,
+		Services: []switchboard.StackServiceStatus{
+			{
+				Name:              "app",
+				GeneratedAppName:  "carina-app",
+				LocalHost:         "app.test",
+				LocalPort:         8383,
+				DesiredPublicHost: "app.example.com",
+				Provider:          "mock",
+				SessionActive:     true,
+				Managed:           true,
+				Drift:             []string{"public_host"},
+				Actions: []switchboard.StackAction{
+					{Type: "create_app"},
+					{Type: "expose"},
+				},
+			},
+			{
+				Name:             "worker",
+				GeneratedAppName: "carina-worker",
+				LocalHost:        "worker.test",
+				LocalPort:        9393,
+				Collision:        "managed app already exists",
+			},
+		},
+		Orphans: []switchboard.StackManagedOrphan{
+			{AppName: "old-app", Service: "old", LocalHost: "old.test", PublicHost: "old.example.com"},
+		},
+	}
+
+	model := buildStackReportViewModel("plan", report)
+	if model.Command != "plan" || model.StackName != "carina" || model.StackFile != "/tmp/stack.yaml" {
+		t.Fatalf("unexpected model header %#v", model)
+	}
+	if len(model.Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %#v", model)
+	}
+	if model.Rows[0].Name != "app" {
+		t.Fatalf("expected sorted app first, got %#v", model.Rows)
+	}
+	if model.Rows[0].Session != "active" {
+		t.Fatalf("expected active session, got %#v", model.Rows[0])
+	}
+	if model.Rows[1].Session != "collision" {
+		t.Fatalf("expected collision session, got %#v", model.Rows[1])
+	}
+	if len(model.Collisions) != 1 || !strings.Contains(model.Collisions[0], "managed app already exists") {
+		t.Fatalf("unexpected collisions %#v", model.Collisions)
+	}
+	if len(model.Orphans) != 1 || !strings.Contains(model.Orphans[0], "old-app") {
+		t.Fatalf("unexpected orphans %#v", model.Orphans)
+	}
+}
+
+func TestRenderStackReportPlainIncludesCollisionsAndOrphans(t *testing.T) {
+	rc := &runContext{out: cliOutput{}}
+	model := stackReportViewModel{
+		Command:   "plan",
+		StackName: "carina",
+		StackFile: "/tmp/stack.yaml",
+		Rows: []stackServiceRow{
+			{
+				Name:       "app",
+				AppName:    "carina-app",
+				LocalHost:  "app.test",
+				Port:       8383,
+				PublicHost: "app.example.com",
+				Provider:   "mock",
+				Session:    "active",
+				Actions:    []string{"create_app"},
+			},
+		},
+		Collisions: []string{"worker: managed app already exists"},
+		Orphans:    []string{"app=old-app service=old local_host=old.test public_host=old.example.com"},
+	}
+
+	stdout, err := captureStdout(t, func() error {
+		return rc.renderStackReportPlain(model)
+	})
+	if err != nil {
+		t.Fatalf("captureStdout returned error: %v", err)
+	}
+	for _, want := range []string{
+		"stack: carina",
+		"collision worker: managed app already exists",
+		"orphan: app=old-app service=old local_host=old.test public_host=old.example.com",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout=%q missing %q", stdout, want)
+		}
+	}
+}
+
+func TestStackPlanCommandRoutesToTUI(t *testing.T) {
+	orig := stackReportTUIRun
+	defer func() { stackReportTUIRun = orig }()
+
+	called := false
+	stackReportTUIRun = func(model stackReportViewModel, styles cliStyles) error {
+		called = true
+		if model.Command != "plan" {
+			t.Fatalf("expected plan command, got %#v", model)
+		}
+		return nil
+	}
+
+	client, stackPath := setupCLIStackFixture(t)
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"--ui", "tui", "stack", "plan", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			UI:          uiModeTUI,
+			Interactive: true,
+		}},
+		client: client,
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected stack TUI runner to be called")
+	}
+}
+
 func TestAppLsShowsTunnelHealth(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")

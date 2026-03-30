@@ -83,6 +83,16 @@ type appListTUIModel struct {
 	healthError string
 }
 
+type stackReportTUIModel struct {
+	styles   cliStyles
+	viewport viewport.Model
+	width    int
+	height   int
+	ready    bool
+	model    stackReportViewModel
+	selected int
+}
+
 func runServiceLogTUI(opts app.ServiceLogOptions, commandName string, styles cliStyles) error {
 	model := &serviceLogTUIModel{
 		styles:       styles,
@@ -93,6 +103,16 @@ func runServiceLogTUI(opts app.ServiceLogOptions, commandName string, styles cli
 		command:      commandName,
 	}
 	p := tea.NewProgram(model, tea.WithAltScreen())
+	_, err := p.Run()
+	return err
+}
+
+func runStackReportTUI(model stackReportViewModel, styles cliStyles) error {
+	tui := &stackReportTUIModel{
+		styles: styles,
+		model:  model,
+	}
+	p := tea.NewProgram(tui, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -507,6 +527,192 @@ func (m *appListTUIModel) renderSelectedDetail(row appListRow) string {
 	return strings.Join(lines, "\n")
 }
 
+func (m *stackReportTUIModel) Init() tea.Cmd { return nil }
+
+func (m *stackReportTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		listHeight := tuiViewportHeight(msg.Height, 14)
+		if !m.ready {
+			m.viewport = viewport.New(msg.Width, listHeight)
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = listHeight
+		}
+		m.ensureSelectionVisible()
+		m.refreshViewport()
+		return m, nil
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "up", "k":
+			if m.selected > 0 {
+				m.selected--
+				m.ensureSelectionVisible()
+				m.refreshViewport()
+			}
+			return m, nil
+		case "down", "j":
+			if m.selected < len(m.model.Rows)-1 {
+				m.selected++
+				m.ensureSelectionVisible()
+				m.refreshViewport()
+			}
+			return m, nil
+		case "pgup", "b":
+			if m.selected > 0 {
+				m.selected = max(0, m.selected-m.viewport.Height)
+				m.ensureSelectionVisible()
+				m.refreshViewport()
+			}
+			return m, nil
+		case "pgdown", " ":
+			if m.selected < len(m.model.Rows)-1 {
+				m.selected = min(len(m.model.Rows)-1, m.selected+m.viewport.Height)
+				m.ensureSelectionVisible()
+				m.refreshViewport()
+			}
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func (m *stackReportTUIModel) View() string {
+	meta := []string{
+		"command=" + valueOrDash(m.model.Command),
+		fmt.Sprintf("services=%d", len(m.model.Rows)),
+	}
+	if m.model.HasChanges {
+		meta = append(meta, "changes=yes")
+	}
+	if m.model.HasUnsafe {
+		meta = append(meta, "unsafe=yes")
+	}
+	header := renderTUIHeader(m.styles, "switchd stack", meta)
+	footer := renderTUIFooter(m.styles,
+		tuiHelpEntry{Key: "j/k", Label: "move"},
+		tuiHelpEntry{Key: "q", Label: "quit"},
+	)
+
+	listBody := renderTUIState(m.styles, "empty", "No services in stack report.")
+	if m.ready && len(m.model.Rows) > 0 {
+		listBody = renderTUIPanel(m.styles, "Services", m.viewport.View())
+	}
+
+	detailBody := renderTUIState(m.styles, "empty", "No service selected.")
+	if row, ok := m.selectedRow(); ok {
+		detailBody = renderTUIPanel(m.styles, "Details", m.renderSelectedDetail(row))
+	}
+
+	parts := []string{
+		header,
+		renderTUIPanel(m.styles, "Stack", m.renderSummary()),
+		listBody,
+		detailBody,
+	}
+	if len(m.model.Collisions) > 0 {
+		parts = append(parts, renderTUIPanel(m.styles, "Collisions", strings.Join(m.model.Collisions, "\n")))
+	}
+	if len(m.model.Orphans) > 0 {
+		parts = append(parts, renderTUIPanel(m.styles, "Orphans", strings.Join(m.model.Orphans, "\n")))
+	}
+	parts = append(parts, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+func (m *stackReportTUIModel) renderSummary() string {
+	lines := []string{
+		fmt.Sprintf("%s %s", m.styles.key.Render("stack"), m.model.StackName),
+		fmt.Sprintf("%s %s", m.styles.key.Render("file"), m.model.StackFile),
+		fmt.Sprintf("%s %s", m.styles.key.Render("changes"), boolLabel(m.model.HasChanges)),
+		fmt.Sprintf("%s %s", m.styles.key.Render("unsafe"), boolLabel(m.model.HasUnsafe)),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *stackReportTUIModel) selectedRow() (stackServiceRow, bool) {
+	if len(m.model.Rows) == 0 || m.selected < 0 || m.selected >= len(m.model.Rows) {
+		return stackServiceRow{}, false
+	}
+	return m.model.Rows[m.selected], true
+}
+
+func (m *stackReportTUIModel) renderSelectedDetail(row stackServiceRow) string {
+	lines := []string{
+		fmt.Sprintf("%s %s", m.styles.key.Render("service"), row.Name),
+		fmt.Sprintf("%s %s", m.styles.key.Render("app"), row.AppName),
+		fmt.Sprintf("%s %s:%d", m.styles.key.Render("local"), row.LocalHost, row.Port),
+		fmt.Sprintf("%s %s", m.styles.key.Render("public"), row.PublicHost),
+		fmt.Sprintf("%s %s", m.styles.key.Render("provider"), row.Provider),
+		fmt.Sprintf("%s %s %s", m.styles.key.Render("session"), renderStatusChip(m.styles, stackSessionHealth(row)), row.Session),
+		fmt.Sprintf("%s %s", m.styles.key.Render("managed"), boolLabel(row.Managed)),
+		fmt.Sprintf("%s %s", m.styles.key.Render("actions"), strings.Join(row.Actions, ", ")),
+	}
+	if len(row.Drift) > 0 {
+		lines = append(lines, fmt.Sprintf("%s %s", m.styles.key.Render("drift"), strings.Join(row.Drift, ", ")))
+	}
+	if strings.TrimSpace(row.EndpointID) != "" {
+		lines = append(lines, fmt.Sprintf("%s %s", m.styles.key.Render("endpoint"), row.EndpointID))
+	}
+	if strings.TrimSpace(row.Collision) != "" {
+		lines = append(lines, fmt.Sprintf("%s %s", m.styles.key.Render("collision"), row.Collision))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *stackReportTUIModel) refreshViewport() {
+	if !m.ready {
+		return
+	}
+	m.viewport.SetContent(m.renderListContent())
+}
+
+func (m *stackReportTUIModel) ensureSelectionVisible() {
+	if !m.ready || len(m.model.Rows) == 0 {
+		return
+	}
+	if m.selected < m.viewport.YOffset {
+		m.viewport.YOffset = m.selected
+		return
+	}
+	bottom := m.viewport.YOffset + m.viewport.Height - 1
+	if m.selected > bottom {
+		m.viewport.YOffset = m.selected - m.viewport.Height + 1
+	}
+}
+
+func (m *stackReportTUIModel) renderListContent() string {
+	if len(m.model.Rows) == 0 {
+		return m.styles.empty.Render("No services in stack report.")
+	}
+	lines := make([]string, 0, len(m.model.Rows))
+	for i, row := range m.model.Rows {
+		drift := "-"
+		if len(row.Drift) > 0 {
+			drift = strings.Join(row.Drift, ",")
+		}
+		line := fmt.Sprintf("%-14s %-16s %-20s %-5d %-16s %-10s %-12s",
+			row.Name,
+			row.AppName,
+			row.LocalHost,
+			row.Port,
+			row.Provider,
+			row.Session,
+			drift,
+		)
+		if i == m.selected {
+			line = m.styles.selected.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 var statusLoader = statusReportInfo
 
 func (m *statusTUIModel) Init() tea.Cmd {
@@ -752,6 +958,20 @@ func tlsSummaryStatus(tls app.StatusTLSReport) string {
 		return "warning"
 	default:
 		return "ok"
+	}
+}
+
+func stackSessionHealth(row stackServiceRow) string {
+	switch row.Session {
+	case "active":
+		return "ok"
+	case "collision":
+		return "error"
+	default:
+		if len(row.Drift) > 0 {
+			return "warning"
+		}
+		return "info"
 	}
 }
 
