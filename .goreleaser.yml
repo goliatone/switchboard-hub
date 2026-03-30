@@ -59,21 +59,31 @@ changelog:
 release:
   replace_existing_artifacts: true
 
-brews:
+homebrew_casks:
   - name: switchd
+    ids:
+      - switchd
+    binaries:
+      - switchd
     repository:
       owner: goliatone
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    description: local development CLI for DNS, Caddy, and tunnel workflows on macOS.
+    commit_msg_template: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
+    directory: Casks
     homepage: https://github.com/goliatone/switchboard-hub
-    license: MIT
-    install: |
-      bin.install "switchd"
-      bin.install_symlink "switchd" => "sbd"
-    test: |
-      system "#{bin}/switchd", "version"
-      system "#{bin}/sbd", "version"
+    description: local development CLI for DNS, Caddy, and tunnel workflows on macOS.
+    caveats: |
+      The Homebrew cask installs the canonical `switchd` command only.
+      Linux packages continue to provide the `sbd` alias.
+    url:
+      verified: github.com/goliatone/switchboard-hub/
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/switchd"]
+          end
 
 nfpms:
   - id: switchd
