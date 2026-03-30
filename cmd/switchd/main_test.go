@@ -102,6 +102,26 @@ func TestGlobalFlagsUseJSON(t *testing.T) {
 	}
 }
 
+func TestGlobalFlagsUIMode(t *testing.T) {
+	cases := []struct {
+		name string
+		in   globalFlags
+		want string
+	}{
+		{name: "default auto", in: globalFlags{}, want: uiModeAuto},
+		{name: "keeps tui", in: globalFlags{UI: "tui"}, want: uiModeTUI},
+		{name: "normalizes uppercase", in: globalFlags{UI: "PLAIN"}, want: uiModePlain},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.in.uiMode(); got != tc.want {
+				t.Fatalf("uiMode()=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFindAppByInput(t *testing.T) {
 	apps := []config.App{
 		{Name: "esign", LocalHost: "esign.test"},
@@ -267,6 +287,7 @@ func TestServiceLogCommandJSONErrorWritesJSONToStderr(t *testing.T) {
 				CommandName: defaultCommandName,
 				Quiet:       cli.Quiet,
 				JSON:        cli.useJSON(),
+				UI:          cli.uiMode(),
 			}},
 		}
 		runErr := ctx.Run(rc)
@@ -485,7 +506,7 @@ func TestAppLsShowsTunnelHealth(t *testing.T) {
 	if err := client.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig returned error: %v", err)
 	}
-	if err := client.CreateApp("active-app", 3000, ""); err != nil {
+	if err := client.CreateApp("active-app", 3000, nil); err != nil {
 		t.Fatalf("CreateApp active returned error: %v", err)
 	}
 	if err := client.ExposeApp("active-app", "mock", "active.example.com"); err != nil {
@@ -494,7 +515,7 @@ func TestAppLsShowsTunnelHealth(t *testing.T) {
 	if err := client.AppUp("active-app"); err != nil {
 		t.Fatalf("AppUp active returned error: %v", err)
 	}
-	if err := client.CreateApp("idle-app", 3001, ""); err != nil {
+	if err := client.CreateApp("idle-app", 3001, nil); err != nil {
 		t.Fatalf("CreateApp idle returned error: %v", err)
 	}
 	if err := client.ExposeApp("idle-app", "mock", "idle.example.com"); err != nil {
@@ -510,6 +531,53 @@ func TestAppLsShowsTunnelHealth(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "idle KO") {
 		t.Fatalf("stdout=%q missing idle KO", stdout)
+	}
+}
+
+type unavailableStatusProvider struct {
+	*testCLIProvider
+}
+
+func (p *unavailableStatusProvider) Status(context.Context, string) (switchboard.EndpointStatus, error) {
+	return switchboard.EndpointStatus{}, errors.New("provider status unavailable")
+}
+
+func TestAppLsShowsUnknownTunnelHealthWhenStatusUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	client := switchboard.New(switchboard.Options{
+		ConfigPath: cfgPath,
+		ProviderRegistry: testCLIRegistry{
+			provider: &unavailableStatusProvider{testCLIProvider: newTestCLIProvider()},
+		},
+		ApplyFunc: func(string, switchboard.Config) error { return nil },
+	})
+
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		t.Fatalf("LoadOrCreateDefaultConfig returned error: %v", err)
+	}
+	cfg.Caddy.TLS.Enabled = false
+	cfg.Tunnel.DefaultProvider = "mock"
+	if err := client.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+	if err := client.CreateApp("demo", 3000, nil); err != nil {
+		t.Fatalf("CreateApp returned error: %v", err)
+	}
+	if err := client.ExposeApp("demo", "mock", "demo.example.com"); err != nil {
+		t.Fatalf("ExposeApp returned error: %v", err)
+	}
+	if err := client.AppUp("demo"); err != nil {
+		t.Fatalf("AppUp returned error: %v", err)
+	}
+
+	stdout, _, err := runCLIForTest(t, client, []string{"app", "ls"})
+	if err != nil {
+		t.Fatalf("runCLIForTest returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "active ?") {
+		t.Fatalf("stdout=%q missing active ?", stdout)
 	}
 }
 
@@ -565,6 +633,7 @@ func runCLIForTest(t *testing.T, client *switchboard.Client, args []string) (str
 				CommandName: defaultCommandName,
 				Quiet:       cli.Quiet,
 				JSON:        cli.useJSON(),
+				UI:          cli.uiMode(),
 			}},
 			client: client,
 		})

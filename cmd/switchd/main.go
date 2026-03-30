@@ -38,6 +38,7 @@ type globalFlags struct {
 	Quiet   bool   `name:"quiet" short:"q" help:"Suppress non-essential success/info output."`
 	JSON    bool   `name:"json" help:"Print machine-readable JSON output when supported."`
 	Output  string `name:"output" enum:"text,json" default:"text" help:"Output mode."`
+	UI      string `name:"ui" enum:"auto,plain,tui" default:"auto" help:"Human UI mode."`
 }
 
 func (g globalFlags) useJSON() bool {
@@ -45,6 +46,14 @@ func (g globalFlags) useJSON() bool {
 		return true
 	}
 	return strings.EqualFold(strings.TrimSpace(g.Output), "json")
+}
+
+func (g globalFlags) uiMode() string {
+	mode := strings.ToLower(strings.TrimSpace(g.UI))
+	if mode == "" {
+		return "auto"
+	}
+	return mode
 }
 
 type CLI struct {
@@ -110,7 +119,11 @@ func (c *AppCreateCmd) Run(r *runContext) error {
 	if c.Port <= 0 || c.Port > 65535 {
 		return fmt.Errorf("--port must be 1..65535")
 	}
-	if err := r.client.CreateApp(c.NameOrHost, c.Port, c.DialHost); err != nil {
+	var opts *switchboard.CreateAppOptions
+	if strings.TrimSpace(c.DialHost) != "" {
+		opts = &switchboard.CreateAppOptions{DialHost: c.DialHost}
+	}
+	if err := r.client.CreateApp(c.NameOrHost, c.Port, opts); err != nil {
 		return err
 	}
 	apps, err := r.client.ListApps()
@@ -161,6 +174,8 @@ func (c *AppLsCmd) Run(r *runContext) error {
 		payload := map[string]any{"apps": apps, "count": len(apps)}
 		if healthErr == nil {
 			payload["health"] = health
+		} else {
+			payload["health_error"] = strings.TrimSpace(healthErr.Error())
 		}
 		r.out.jsonOut(os.Stdout, payload)
 		return nil
@@ -170,6 +185,7 @@ func (c *AppLsCmd) Run(r *runContext) error {
 		return nil
 	}
 	healthByApp := map[string]switchboard.AppTunnelHealth{}
+	healthKnown := healthErr == nil
 	if healthErr == nil {
 		for _, item := range health {
 			healthByApp[strings.ToLower(strings.TrimSpace(item.AppName))] = item
@@ -191,7 +207,7 @@ func (c *AppLsCmd) Run(r *runContext) error {
 			fmt.Sprintf("%d", a.LocalPort),
 			public,
 			oauth,
-			switchboardAppSessionLabel(a, healthByApp[strings.ToLower(strings.TrimSpace(a.Name))]),
+			switchboardAppSessionLabel(a, healthByApp[strings.ToLower(strings.TrimSpace(a.Name))], healthKnown),
 		})
 	}
 	r.out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, rows)
@@ -480,7 +496,7 @@ func (c *TunnelInitCmd) Run(r *runContext) error {
 	if _, ok := fields["provider"]; !ok && strings.TrimSpace(c.Provider) != "" {
 		fields["provider"] = strings.TrimSpace(c.Provider)
 	}
-	if report, err := prepareServiceEnvRun(); err == nil {
+	if report, err := maybeCollectMissingServiceEnv(r); err == nil {
 		if strings.TrimSpace(report.EnvFilePath) != "" {
 			fields["env_file"] = report.EnvFilePath
 		}
@@ -658,6 +674,11 @@ func (c *StatusCmd) Run(r *runContext) error {
 		r.out.jsonOut(os.Stdout, report)
 		return nil
 	}
+	if useTUI, err := r.wantsTUIForStatus(); err != nil {
+		return err
+	} else if useTUI {
+		return runStatusTUI(statusReportInfo, r.out.styles())
+	}
 	renderStatusReport(report)
 	return nil
 }
@@ -716,6 +737,9 @@ func (c *CaddyRunCmd) Run(_ *runContext) error {
 type ServiceInstallCmd struct{}
 
 func (c *ServiceInstallCmd) Run(r *runContext) error {
+	if _, err := maybeCollectMissingServiceEnv(r); err != nil {
+		return err
+	}
 	report, err := app.ServiceInstallWithReport()
 	if err != nil {
 		return err
@@ -728,6 +752,9 @@ func (c *ServiceInstallCmd) Run(r *runContext) error {
 type ServiceStartCmd struct{}
 
 func (c *ServiceStartCmd) Run(r *runContext) error {
+	if _, err := maybeCollectMissingServiceEnv(r); err != nil {
+		return err
+	}
 	report, err := app.ServiceStartWithReport()
 	if err != nil {
 		return err
@@ -816,6 +843,15 @@ func (c *ServiceLogCmd) Run(r *runContext) error {
 	if c.Lines < 0 {
 		return fmt.Errorf("--lines must be >= 0")
 	}
+	if useTUI, err := r.wantsTUIForServiceLog(); err != nil {
+		return err
+	} else if useTUI {
+		return runServiceLogTUI(app.ServiceLogOptions{
+			Lines:  c.Lines,
+			Follow: follow,
+			Stream: c.Stream,
+		}, commandName(r.out.opts.CommandName), r.out.styles())
+	}
 	return serviceLogRun(app.ServiceLogOptions{
 		Lines:  c.Lines,
 		Follow: follow,
@@ -863,10 +899,16 @@ type outputOptions struct {
 	CommandName string
 	Quiet       bool
 	JSON        bool
+	UI          string
+	Interactive bool
 }
 
 type cliOutput struct {
 	opts outputOptions
+}
+
+func (o cliOutput) styles() cliStyles {
+	return newCLIStyles(o.opts.Interactive)
 }
 
 func (o cliOutput) jsonOut(w io.Writer, payload any) {
@@ -885,9 +927,21 @@ func sortedFieldKeys(fields map[string]any) []string {
 }
 
 func (o cliOutput) textEvent(w io.Writer, level, msg string, fields map[string]any) {
-	fmt.Fprintf(w, "[%s] %s\n", level, msg)
+	styles := o.styles()
+	badge := "[" + level + "]"
+	switch level {
+	case "OK":
+		badge = styles.badgeOK.Render("[" + level + "]")
+	case "INFO":
+		badge = styles.badgeInfo.Render("[" + level + "]")
+	case "WARN":
+		badge = styles.badgeWarn.Render("[" + level + "]")
+	case "ERR":
+		badge = styles.badgeErr.Render("[" + level + "]")
+	}
+	fmt.Fprintf(w, "%s %s\n", badge, msg)
 	for _, k := range sortedFieldKeys(fields) {
-		fmt.Fprintf(w, "  %s: %v\n", k, fields[k])
+		fmt.Fprintf(w, "  %s: %v\n", styles.key.Render(k), fields[k])
 	}
 }
 
@@ -990,6 +1044,7 @@ func (o cliOutput) printTable(headers []string, rows [][]string) {
 	if len(headers) == 0 {
 		return
 	}
+	styles := o.styles()
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = len(h)
@@ -1002,16 +1057,16 @@ func (o cliOutput) printTable(headers []string, rows [][]string) {
 		}
 	}
 	for i, h := range headers {
-		fmt.Printf("%-*s", widths[i], h)
+		fmt.Print(styles.tableHeader.Render(padCell(h, widths[i])))
 		if i < len(headers)-1 {
-			fmt.Print("  ")
+			fmt.Print(styles.tableBorder.Render("  "))
 		}
 	}
 	fmt.Println()
 	for i := range headers {
-		fmt.Printf("%-*s", widths[i], strings.Repeat("-", widths[i]))
+		fmt.Print(styles.tableBorder.Render(strings.Repeat("-", widths[i])))
 		if i < len(headers)-1 {
-			fmt.Print("  ")
+			fmt.Print(styles.tableBorder.Render("  "))
 		}
 	}
 	fmt.Println()
@@ -1028,6 +1083,13 @@ func (o cliOutput) printTable(headers []string, rows [][]string) {
 		}
 		fmt.Println()
 	}
+}
+
+func padCell(value string, width int) string {
+	if len(value) >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-len(value))
 }
 
 type runContext struct {
@@ -1151,7 +1213,7 @@ func appSessionLabel(a config.App) string {
 	return "none"
 }
 
-func switchboardAppSessionLabel(a switchboard.App, health switchboard.AppTunnelHealth) string {
+func switchboardAppSessionLabel(a switchboard.App, health switchboard.AppTunnelHealth, healthKnown bool) string {
 	state := "none"
 	if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
 		state = "active"
@@ -1160,6 +1222,9 @@ func switchboardAppSessionLabel(a switchboard.App, health switchboard.AppTunnelH
 	}
 	if state == "none" {
 		return state
+	}
+	if !healthKnown || strings.TrimSpace(health.Err) != "" {
+		return state + " ?"
 	}
 	if health.Ready {
 		return state + " OK"
@@ -1390,6 +1455,8 @@ func main() {
 			CommandName: invokedName,
 			Quiet:       cli.Quiet,
 			JSON:        cli.useJSON(),
+			UI:          cli.uiMode(),
+			Interactive: isInteractiveTTY(),
 		}},
 		client: switchboard.Default(),
 	}
