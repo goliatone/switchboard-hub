@@ -57,9 +57,23 @@ type App struct {
 	Name           string            `json:"name" yaml:"name"`
 	LocalHost      string            `json:"local_host" yaml:"local_host"`
 	LocalPort      int               `json:"local_port" yaml:"local_port"`
+	DialHost       string            `json:"dial_host,omitempty" yaml:"dial_host,omitempty"`
 	PublicEndpoint AppPublicEndpoint `json:"public_endpoint,omitempty" yaml:"public_endpoint,omitempty"`
 	OAuth          AppOAuth          `json:"oauth,omitempty" yaml:"oauth,omitempty"`
 	Metadata       map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+type AppTunnelHealth struct {
+	AppName      string `json:"app_name"`
+	Provider     string `json:"provider"`
+	EndpointHost string `json:"endpoint_host"`
+	EndpointID   string `json:"endpoint_id"`
+	SessionID    string `json:"session_id"`
+	SessionPID   int    `json:"session_pid"`
+	StartedAt    string `json:"started_at"`
+	Ready        bool   `json:"ready"`
+	Message      string `json:"message"`
+	Err          string `json:"error,omitempty"`
 }
 
 type AppPublicEndpoint struct {
@@ -224,6 +238,7 @@ func fromInternalConfig(c *config.Config) Config {
 			Name:      a.Name,
 			LocalHost: a.LocalHost,
 			LocalPort: a.LocalPort,
+			DialHost:  a.DialHost,
 			PublicEndpoint: AppPublicEndpoint{
 				Provider:             a.PublicEndpoint.Provider,
 				Host:                 a.PublicEndpoint.Host,
@@ -291,6 +306,7 @@ func toInternalConfig(c Config) *config.Config {
 			Name:      a.Name,
 			LocalHost: a.LocalHost,
 			LocalPort: a.LocalPort,
+			DialHost:  a.DialHost,
 			PublicEndpoint: config.AppPublicEndpoint{
 				Provider:             a.PublicEndpoint.Provider,
 				Host:                 a.PublicEndpoint.Host,
@@ -335,6 +351,25 @@ func fromInternalProviderStatus(st []app.TunnelProviderStatus) []TunnelProviderS
 			OAuthSuitable: item.OAuthSuitable,
 			Notes:         append([]string(nil), item.Notes...),
 			Err:           item.Err,
+		})
+	}
+	return out
+}
+
+func fromInternalAppTunnelHealth(st []app.AppTunnelHealth) []AppTunnelHealth {
+	out := make([]AppTunnelHealth, 0, len(st))
+	for _, item := range st {
+		out = append(out, AppTunnelHealth{
+			AppName:      item.AppName,
+			Provider:     item.Provider,
+			EndpointHost: item.EndpointHost,
+			EndpointID:   item.EndpointID,
+			SessionID:    item.SessionID,
+			SessionPID:   item.SessionPID,
+			StartedAt:    item.StartedAt,
+			Ready:        item.Ready,
+			Message:      item.Message,
+			Err:          item.Err,
 		})
 	}
 	return out
