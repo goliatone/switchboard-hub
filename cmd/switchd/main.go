@@ -29,6 +29,7 @@ var (
 	statusReportInfo     = app.StatusReportInfo
 	prepareServiceEnvRun = app.PrepareServiceEnvironment
 	appListTUIRun        = runAppListTUI
+	stackReportTUIRun    = runStackReportTUI
 )
 
 const defaultCommandName = "switchd"
@@ -1084,55 +1085,24 @@ func (r *runContext) renderStackReport(command string, report switchboard.StackR
 		r.out.jsonOut(os.Stdout, map[string]any{"stack": report, "command": command})
 		return nil
 	}
-	fmt.Printf("stack: %s\n", report.StackName)
-	fmt.Printf("file:  %s\n", report.StackFile)
-	rows := make([][]string, 0, len(report.Services))
-	for _, svc := range report.Services {
-		publicHost := svc.ActualPublicHost
-		if publicHost == "" {
-			publicHost = svc.DesiredPublicHost
-		}
-		if publicHost == "" {
-			publicHost = "-"
-		}
-		drift := "-"
-		if len(svc.Drift) > 0 {
-			drift = strings.Join(svc.Drift, ",")
-		}
-		actionNames := make([]string, 0, len(svc.Actions))
-		for _, action := range svc.Actions {
-			actionNames = append(actionNames, action.Type)
-		}
-		if len(actionNames) == 0 {
-			actionNames = []string{"no_op"}
-		}
-		session := "idle"
-		if svc.SessionActive {
-			session = "active"
-		}
-		if svc.Collision != "" {
-			session = "collision"
-		}
-		rows = append(rows, []string{
-			svc.Name,
-			svc.GeneratedAppName,
-			svc.LocalHost,
-			fmt.Sprintf("%d", svc.LocalPort),
-			publicHost,
-			valueOrDash(svc.Provider),
-			session,
-			drift,
-			strings.Join(actionNames, ","),
-		})
+	model := buildStackReportViewModel(command, report)
+	if useTUI, err := r.wantsTUIForStack(); err != nil {
+		return err
+	} else if useTUI {
+		return stackReportTUIRun(model, r.out.styles())
 	}
-	r.out.printTable([]string{"SERVICE", "APP", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "PROVIDER", "SESSION", "DRIFT", "ACTIONS"}, rows)
-	for _, svc := range report.Services {
-		if svc.Collision != "" {
-			fmt.Printf("collision %s: %s\n", svc.Name, svc.Collision)
-		}
+	return r.renderStackReportPlain(model)
+}
+
+func (r *runContext) renderStackReportPlain(model stackReportViewModel) error {
+	fmt.Printf("stack: %s\n", model.StackName)
+	fmt.Printf("file:  %s\n", model.StackFile)
+	r.out.printTable([]string{"SERVICE", "APP", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "PROVIDER", "SESSION", "DRIFT", "ACTIONS"}, buildStackReportTableRows(model))
+	for _, collision := range model.Collisions {
+		fmt.Printf("collision %s\n", collision)
 	}
-	for _, orphan := range report.Orphans {
-		fmt.Printf("orphan: app=%s service=%s local_host=%s public_host=%s\n", orphan.AppName, orphan.Service, valueOrDash(orphan.LocalHost), valueOrDash(orphan.PublicHost))
+	for _, orphan := range model.Orphans {
+		fmt.Printf("orphan: %s\n", orphan)
 	}
 	return nil
 }

@@ -147,3 +147,117 @@ func appTunnelHealthState(a switchboard.App, health switchboard.AppTunnelHealth,
 	}
 	return "warning"
 }
+
+type stackReportViewModel struct {
+	Command    string
+	StackName  string
+	StackFile  string
+	Rows       []stackServiceRow
+	Collisions []string
+	Orphans    []string
+	HasChanges bool
+	HasUnsafe  bool
+}
+
+type stackServiceRow struct {
+	Name        string
+	AppName     string
+	LocalHost   string
+	Port        int
+	PublicHost  string
+	Provider    string
+	Session     string
+	Drift       []string
+	Actions     []string
+	Collision   string
+	Managed     bool
+	EndpointID  string
+	Active      bool
+}
+
+func buildStackReportViewModel(command string, report switchboard.StackReport) stackReportViewModel {
+	model := stackReportViewModel{
+		Command:    strings.TrimSpace(command),
+		StackName:  report.StackName,
+		StackFile:  report.StackFile,
+		Rows:       make([]stackServiceRow, 0, len(report.Services)),
+		Collisions: make([]string, 0),
+		Orphans:    make([]string, 0, len(report.Orphans)),
+		HasChanges: report.HasChanges,
+		HasUnsafe:  report.HasUnsafe,
+	}
+	for _, svc := range report.Services {
+		publicHost := strings.TrimSpace(svc.ActualPublicHost)
+		if publicHost == "" {
+			publicHost = strings.TrimSpace(svc.DesiredPublicHost)
+		}
+		if publicHost == "" {
+			publicHost = "-"
+		}
+		actions := make([]string, 0, len(svc.Actions))
+		for _, action := range svc.Actions {
+			actions = append(actions, action.Type)
+		}
+		if len(actions) == 0 {
+			actions = append(actions, "no_op")
+		}
+		session := "idle"
+		if svc.SessionActive {
+			session = "active"
+		}
+		if strings.TrimSpace(svc.Collision) != "" {
+			session = "collision"
+			model.Collisions = append(model.Collisions, fmt.Sprintf("%s: %s", svc.Name, strings.TrimSpace(svc.Collision)))
+		}
+		model.Rows = append(model.Rows, stackServiceRow{
+			Name:       svc.Name,
+			AppName:    svc.GeneratedAppName,
+			LocalHost:  svc.LocalHost,
+			Port:       svc.LocalPort,
+			PublicHost: publicHost,
+			Provider:   valueOrDash(svc.Provider),
+			Session:    session,
+			Drift:      append([]string(nil), svc.Drift...),
+			Actions:    actions,
+			Collision:  strings.TrimSpace(svc.Collision),
+			Managed:    svc.Managed,
+			EndpointID: svc.EndpointID,
+			Active:     svc.SessionActive,
+		})
+	}
+	sort.Slice(model.Rows, func(i, j int) bool { return model.Rows[i].Name < model.Rows[j].Name })
+	sort.Strings(model.Collisions)
+	for _, orphan := range report.Orphans {
+		model.Orphans = append(model.Orphans, fmt.Sprintf(
+			"app=%s service=%s local_host=%s public_host=%s",
+			orphan.AppName,
+			orphan.Service,
+			valueOrDash(orphan.LocalHost),
+			valueOrDash(orphan.PublicHost),
+		))
+	}
+	sort.Strings(model.Orphans)
+	return model
+}
+
+func buildStackReportTableRows(model stackReportViewModel) [][]string {
+	rows := make([][]string, 0, len(model.Rows))
+	for _, row := range model.Rows {
+		drift := "-"
+		if len(row.Drift) > 0 {
+			drift = strings.Join(row.Drift, ",")
+		}
+		rows = append(rows, []string{
+			row.Name,
+			row.AppName,
+			row.LocalHost,
+			fmt.Sprintf("%d", row.Port),
+			row.PublicHost,
+			row.Provider,
+			row.Session,
+			drift,
+			strings.Join(row.Actions, ","),
+		})
+	}
+	return rows
+}
