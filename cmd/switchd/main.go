@@ -28,6 +28,7 @@ var (
 	serviceLogRun        = app.ServiceLog
 	statusReportInfo     = app.StatusReportInfo
 	prepareServiceEnvRun = app.PrepareServiceEnvironment
+	appListTUIRun        = runAppListTUI
 )
 
 const defaultCommandName = "switchd"
@@ -180,37 +181,17 @@ func (c *AppLsCmd) Run(r *runContext) error {
 		r.out.jsonOut(os.Stdout, payload)
 		return nil
 	}
-	if len(apps) == 0 {
+	model := buildAppListViewModel(apps, health, healthErr)
+	if useTUI, err := r.wantsTUIForAppList(); err != nil {
+		return err
+	} else if useTUI {
+		return appListTUIRun(model, r.out.styles())
+	}
+	if len(model.Rows) == 0 {
 		r.out.info("No apps configured", nil)
 		return nil
 	}
-	healthByApp := map[string]switchboard.AppTunnelHealth{}
-	healthKnown := healthErr == nil
-	if healthErr == nil {
-		for _, item := range health {
-			healthByApp[strings.ToLower(strings.TrimSpace(item.AppName))] = item
-		}
-	}
-	rows := make([][]string, 0, len(apps))
-	for _, a := range apps {
-		public := strings.TrimSpace(a.PublicEndpoint.Host)
-		if public == "" {
-			public = "-"
-		}
-		oauth := "off"
-		if a.OAuth.Google.Enabled {
-			oauth = "google"
-		}
-		rows = append(rows, []string{
-			a.Name,
-			a.LocalHost,
-			fmt.Sprintf("%d", a.LocalPort),
-			public,
-			oauth,
-			switchboardAppSessionLabel(a, healthByApp[strings.ToLower(strings.TrimSpace(a.Name))], healthKnown),
-		})
-	}
-	r.out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, rows)
+	r.out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, buildAppListTableRows(model))
 	return nil
 }
 

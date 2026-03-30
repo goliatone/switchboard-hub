@@ -122,6 +122,96 @@ func TestGlobalFlagsUIMode(t *testing.T) {
 	}
 }
 
+func TestRunContextTUIRouting(t *testing.T) {
+	cases := []struct {
+		name        string
+		opts        outputOptions
+		check       func(*runContext) (bool, error)
+		wantEnabled bool
+		wantErr     string
+	}{
+		{
+			name:        "service log auto interactive",
+			opts:        outputOptions{UI: uiModeAuto, Interactive: true},
+			check:       (*runContext).wantsTUIForServiceLog,
+			wantEnabled: true,
+		},
+		{
+			name:        "service log auto non interactive",
+			opts:        outputOptions{UI: uiModeAuto, Interactive: false},
+			check:       (*runContext).wantsTUIForServiceLog,
+			wantEnabled: false,
+		},
+		{
+			name:        "service log plain interactive",
+			opts:        outputOptions{UI: uiModePlain, Interactive: true},
+			check:       (*runContext).wantsTUIForServiceLog,
+			wantEnabled: false,
+		},
+		{
+			name:    "service log explicit tui non interactive errors",
+			opts:    outputOptions{UI: uiModeTUI, Interactive: false},
+			check:   (*runContext).wantsTUIForServiceLog,
+			wantErr: "--ui=tui requires an interactive terminal",
+		},
+		{
+			name:        "status auto interactive stays plain",
+			opts:        outputOptions{UI: uiModeAuto, Interactive: true},
+			check:       (*runContext).wantsTUIForStatus,
+			wantEnabled: false,
+		},
+		{
+			name:        "status explicit tui interactive",
+			opts:        outputOptions{UI: uiModeTUI, Interactive: true},
+			check:       (*runContext).wantsTUIForStatus,
+			wantEnabled: true,
+		},
+		{
+			name:        "app list explicit tui interactive",
+			opts:        outputOptions{UI: uiModeTUI, Interactive: true},
+			check:       (*runContext).wantsTUIForAppList,
+			wantEnabled: true,
+		},
+		{
+			name:        "stack explicit tui interactive",
+			opts:        outputOptions{UI: uiModeTUI, Interactive: true},
+			check:       (*runContext).wantsTUIForStack,
+			wantEnabled: true,
+		},
+		{
+			name:        "service status explicit tui interactive",
+			opts:        outputOptions{UI: uiModeTUI, Interactive: true},
+			check:       (*runContext).wantsTUIForServiceStatus,
+			wantEnabled: true,
+		},
+		{
+			name:        "json disables tui even when explicit",
+			opts:        outputOptions{UI: uiModeTUI, Interactive: true, JSON: true},
+			check:       (*runContext).wantsTUIForServiceStatus,
+			wantEnabled: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &runContext{out: cliOutput{opts: tc.opts}}
+			got, err := tc.check(r)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err=%v want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantEnabled {
+				t.Fatalf("enabled=%v want %v", got, tc.wantEnabled)
+			}
+		})
+	}
+}
+
 func TestFindAppByInput(t *testing.T) {
 	apps := []config.App{
 		{Name: "esign", LocalHost: "esign.test"},
@@ -578,6 +668,193 @@ func TestAppLsShowsUnknownTunnelHealthWhenStatusUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "active ?") {
 		t.Fatalf("stdout=%q missing active ?", stdout)
+	}
+}
+
+func TestBuildAppListViewModel(t *testing.T) {
+	apps := []switchboard.App{
+		{
+			Name:      "active-app",
+			LocalHost: "active.test",
+			LocalPort: 3000,
+			PublicEndpoint: switchboard.AppPublicEndpoint{
+				Provider:             "mock",
+				Host:                 "active.example.com",
+				EndpointID:           "ep-active",
+				ActiveSessionID:      "sess-active",
+				ActiveSessionPID:     1234,
+				ActiveSessionStarted: "2026-03-29T23:00:00Z",
+			},
+		},
+		{
+			Name:      "idle-app",
+			LocalHost: "idle.test",
+			LocalPort: 3001,
+			PublicEndpoint: switchboard.AppPublicEndpoint{
+				Provider:   "mock",
+				Host:       "idle.example.com",
+				EndpointID: "ep-idle",
+			},
+			OAuth: switchboard.AppOAuth{
+				Google: switchboard.AppGoogleOAuth{Enabled: true},
+			},
+		},
+	}
+	health := []switchboard.AppTunnelHealth{
+		{
+			AppName:      "active-app",
+			Provider:     "mock",
+			EndpointHost: "active.example.com",
+			SessionID:    "sess-active",
+			SessionPID:   1234,
+			StartedAt:    "2026-03-29T23:00:00Z",
+			Ready:        true,
+			Message:      "active",
+		},
+		{
+			AppName:      "idle-app",
+			Provider:     "mock",
+			EndpointHost: "idle.example.com",
+			Ready:        false,
+			Message:      "inactive",
+		},
+	}
+
+	model := buildAppListViewModel(apps, health, nil)
+	if len(model.Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(model.Rows))
+	}
+	if model.Rows[0].Name != "active-app" {
+		t.Fatalf("expected sorted active-app first, got %#v", model.Rows)
+	}
+	if model.Rows[0].TunnelLabel != "active OK" || model.Rows[0].TunnelHealth != "ok" {
+		t.Fatalf("unexpected active row %#v", model.Rows[0])
+	}
+	if model.Rows[1].TunnelLabel != "idle KO" || model.Rows[1].TunnelHealth != "warning" {
+		t.Fatalf("unexpected idle row %#v", model.Rows[1])
+	}
+	if model.Rows[1].OAuth != "google" {
+		t.Fatalf("expected oauth google, got %#v", model.Rows[1])
+	}
+
+	unknown := buildAppListViewModel(apps[:1], nil, errors.New("provider status unavailable"))
+	if unknown.HealthError != "provider status unavailable" {
+		t.Fatalf("unexpected health error %#v", unknown)
+	}
+	if unknown.Rows[0].TunnelLabel != "active ?" || unknown.Rows[0].TunnelHealth != "unknown" {
+		t.Fatalf("unexpected unknown row %#v", unknown.Rows[0])
+	}
+}
+
+func TestAppLsCommandRoutesToTUI(t *testing.T) {
+	orig := appListTUIRun
+	defer func() { appListTUIRun = orig }()
+
+	called := false
+	appListTUIRun = func(model appListViewModel, styles cliStyles) error {
+		called = true
+		if len(model.Rows) != 1 {
+			t.Fatalf("expected 1 row, got %#v", model)
+		}
+		return nil
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	client := switchboard.New(switchboard.Options{
+		ConfigPath: cfgPath,
+		ProviderRegistry: testCLIRegistry{
+			provider: newTestCLIProvider(),
+		},
+		ApplyFunc: func(string, switchboard.Config) error { return nil },
+	})
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		t.Fatalf("LoadOrCreateDefaultConfig returned error: %v", err)
+	}
+	cfg.Caddy.TLS.Enabled = false
+	cfg.Tunnel.DefaultProvider = "mock"
+	if err := client.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+	if err := client.CreateApp("demo", 3000, nil); err != nil {
+		t.Fatalf("CreateApp returned error: %v", err)
+	}
+
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"--ui", "tui", "app", "ls"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			UI:          uiModeTUI,
+			Interactive: true,
+		}},
+		client: client,
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected TUI runner to be called")
+	}
+}
+
+func TestAppLsCommandJSONBypassesTUI(t *testing.T) {
+	orig := appListTUIRun
+	defer func() { appListTUIRun = orig }()
+
+	appListTUIRun = func(model appListViewModel, styles cliStyles) error {
+		t.Fatal("did not expect app list TUI in JSON mode")
+		return nil
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	client := switchboard.New(switchboard.Options{ConfigPath: cfgPath})
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		t.Fatalf("LoadOrCreateDefaultConfig returned error: %v", err)
+	}
+	cfg.Caddy.TLS.Enabled = false
+	if err := client.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+	if err := client.CreateApp("demo", 3000, nil); err != nil {
+		t.Fatalf("CreateApp returned error: %v", err)
+	}
+
+	stdout, _, err := runCLIForTest(t, client, []string{"--json", "--ui", "tui", "app", "ls"})
+	if err != nil {
+		t.Fatalf("runCLIForTest returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "\"apps\"") {
+		t.Fatalf("expected json apps payload, got %q", stdout)
+	}
+}
+
+func TestAppLsCommandTUIRequiresInteractive(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	client := switchboard.New(switchboard.Options{ConfigPath: cfgPath})
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		t.Fatalf("LoadOrCreateDefaultConfig returned error: %v", err)
+	}
+	cfg.Caddy.TLS.Enabled = false
+	if err := client.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+
+	_, _, err = runCLIForTest(t, client, []string{"--ui", "tui", "app", "ls"})
+	if err == nil || !strings.Contains(err.Error(), "--ui=tui requires an interactive terminal") {
+		t.Fatalf("err=%v want interactive terminal error", err)
 	}
 }
 

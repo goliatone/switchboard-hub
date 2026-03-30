@@ -39,7 +39,7 @@ func (r *runContext) isInteractive() bool {
 	return r.out.opts.Interactive
 }
 
-func (r *runContext) wantsTUIForServiceLog() (bool, error) {
+func (r *runContext) wantsTUI(autoOnInteractive bool) (bool, error) {
 	if r == nil || r.out.opts.JSON {
 		return false, nil
 	}
@@ -52,23 +52,31 @@ func (r *runContext) wantsTUIForServiceLog() (bool, error) {
 		}
 		return true, nil
 	default:
-		return r.isInteractive(), nil
+		if autoOnInteractive {
+			return r.isInteractive(), nil
+		}
+		return false, nil
 	}
 }
 
+func (r *runContext) wantsTUIForServiceLog() (bool, error) {
+	return r.wantsTUI(true)
+}
+
 func (r *runContext) wantsTUIForStatus() (bool, error) {
-	if r == nil || r.out.opts.JSON {
-		return false, nil
-	}
-	switch r.uiMode() {
-	case uiModeTUI:
-		if !r.isInteractive() {
-			return false, fmt.Errorf("--ui=tui requires an interactive terminal")
-		}
-		return true, nil
-	default:
-		return false, nil
-	}
+	return r.wantsTUI(false)
+}
+
+func (r *runContext) wantsTUIForAppList() (bool, error) {
+	return r.wantsTUI(false)
+}
+
+func (r *runContext) wantsTUIForStack() (bool, error) {
+	return r.wantsTUI(false)
+}
+
+func (r *runContext) wantsTUIForServiceStatus() (bool, error) {
+	return r.wantsTUI(false)
 }
 
 func (r *runContext) canPromptInteractively() bool {
