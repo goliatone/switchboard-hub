@@ -68,11 +68,14 @@ type LaunchdServiceStatus struct {
 }
 
 type ServiceEnvironmentReport struct {
-	ConfigPath        string   `json:"config_path"`
-	EnvFilePath       string   `json:"env_file_path"`
-	RequiredEnvVars   []string `json:"required_env_vars,omitempty"`
-	ConfiguredEnvVars []string `json:"configured_env_vars,omitempty"`
-	MissingEnvVars    []string `json:"missing_env_vars,omitempty"`
+	ConfigPath          string   `json:"config_path"`
+	EnvFilePath         string   `json:"env_file_path"`
+	RequiredEnvVars     []string `json:"required_env_vars,omitempty"`
+	ConfiguredEnvVars   []string `json:"configured_env_vars,omitempty"`
+	MissingEnvVars      []string `json:"missing_env_vars,omitempty"`
+	EnvFileCreated      bool     `json:"env_file_created,omitempty"`
+	EnvFileUpdated      bool     `json:"env_file_updated,omitempty"`
+	EnvFileTemplateVars []string `json:"env_file_template_vars,omitempty"`
 }
 
 type daemonResumeReport struct {
@@ -161,6 +164,7 @@ type ServiceLogOptions struct {
 	Lines  int
 	Follow bool
 	Stream string
+	JSON   bool
 	Stdout io.Writer
 	Stderr io.Writer
 }
@@ -169,9 +173,15 @@ type serviceLogStream struct {
 	name    string
 	path    string
 	writer  io.Writer
+	json    bool
 	stat    os.FileInfo
 	offset  int64
 	partial string
+}
+
+type serviceLogEvent struct {
+	Stream string `json:"stream"`
+	Line   string `json:"line"`
 }
 
 func launchdServiceTarget() string {
@@ -256,18 +266,18 @@ func newServiceLogStreams(opts ServiceLogOptions) ([]*serviceLogStream, bool, er
 	switch mode {
 	case "all":
 		streams = append(streams,
-			&serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter},
-			&serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter},
+			&serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter, json: opts.JSON},
+			&serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter, json: opts.JSON},
 		)
 	case "stdout":
-		streams = append(streams, &serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter})
+		streams = append(streams, &serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter, json: opts.JSON})
 	case "stderr":
-		streams = append(streams, &serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter})
+		streams = append(streams, &serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter, json: opts.JSON})
 	default:
 		return nil, false, fmt.Errorf("unsupported stream %q", opts.Stream)
 	}
 
-	return streams, len(streams) > 1, nil
+	return streams, len(streams) > 1 && !opts.JSON, nil
 }
 
 func (s *serviceLogStream) snapshot(lines int, prefix bool) (bool, error) {
@@ -368,6 +378,12 @@ func (s *serviceLogStream) consume(chunk []byte, prefix bool) error {
 func (s *serviceLogStream) writeLine(line string, prefix bool) error {
 	if s == nil || s.writer == nil {
 		return nil
+	}
+	if s.json {
+		return json.NewEncoder(s.writer).Encode(serviceLogEvent{
+			Stream: s.name,
+			Line:   line,
+		})
 	}
 	if prefix {
 		if line == "" {
@@ -784,6 +800,21 @@ func ServiceEnvironmentInfo() (ServiceEnvironmentReport, error) {
 	return report, err
 }
 
+func PrepareServiceEnvironment() (ServiceEnvironmentReport, error) {
+	configPath, err := cfgPath()
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	report, _, err := resolveServiceEnvironment(configPath)
+	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	if err := ensureServiceEnvTemplate(&report); err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	return report, nil
+}
+
 func startPreparedService() (LaunchdServiceStatus, error) {
 	if err := unloadInstalledServiceDefinition(); err != nil {
 		return LaunchdServiceStatus{}, err
@@ -815,6 +846,9 @@ func syncLaunchdPlist() (ServiceEnvironmentReport, error) {
 	}
 	report, env, err := resolveServiceEnvironment(configPath)
 	if err != nil {
+		return ServiceEnvironmentReport{}, err
+	}
+	if err := ensureServiceEnvTemplate(&report); err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
 	exe, err := resolveExecutable()
@@ -965,6 +999,61 @@ func loadServiceEnvFile(path string) (map[string]string, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func ensureServiceEnvTemplate(report *ServiceEnvironmentReport) error {
+	if report == nil || len(report.MissingEnvVars) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(report.EnvFilePath), 0o755); err != nil {
+		return err
+	}
+
+	existing, err := os.ReadFile(report.EnvFilePath)
+	created := false
+	switch {
+	case err == nil:
+	case os.IsNotExist(err):
+		created = true
+	default:
+		return err
+	}
+	existingVars, err := loadServiceEnvFile(report.EnvFilePath)
+	if err != nil {
+		return err
+	}
+
+	var out strings.Builder
+	if len(existing) > 0 {
+		out.Write(existing)
+		if existing[len(existing)-1] != '\n' {
+			out.WriteByte('\n')
+		}
+	} else {
+		out.WriteString("# switchd launchd environment\n")
+	}
+	for _, name := range report.MissingEnvVars {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := existingVars[name]; ok {
+			continue
+		}
+		out.WriteString(name)
+		out.WriteString("=\n")
+		report.EnvFileTemplateVars = append(report.EnvFileTemplateVars, name)
+	}
+	if len(report.EnvFileTemplateVars) == 0 {
+		return nil
+	}
+	if err := os.WriteFile(report.EnvFilePath, []byte(out.String()), 0o600); err != nil {
+		return err
+	}
+	fixSudoOwnership(report.EnvFilePath)
+	report.EnvFileCreated = created
+	report.EnvFileUpdated = true
+	return nil
 }
 
 func defaultServiceHome() string {
