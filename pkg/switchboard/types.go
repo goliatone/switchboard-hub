@@ -2,6 +2,7 @@ package switchboard
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"github.com/goliatone/switchboard-hub/internal/app"
@@ -14,7 +15,7 @@ type Config struct {
 	DNS    DNS     `json:"dns" yaml:"dns"`
 	Caddy  Caddy   `json:"caddy" yaml:"caddy"`
 	Routes []Route `json:"routes" yaml:"routes"`
-	Tunnel Tunnels `json:"tunnels,omitempty" yaml:"tunnels,omitempty"`
+	Tunnel Tunnels `json:"tunnels" yaml:"tunnels,omitempty"`
 	Apps   []App   `json:"apps,omitempty" yaml:"apps,omitempty"`
 }
 
@@ -59,8 +60,8 @@ type App struct {
 	LocalPort        int               `json:"local_port" yaml:"local_port"`
 	DialHost         string            `json:"dial_host,omitempty" yaml:"dial_host,omitempty"`
 	ResolvedDialHost string            `json:"resolved_dial_host,omitempty" yaml:"resolved_dial_host,omitempty"`
-	PublicEndpoint   AppPublicEndpoint `json:"public_endpoint,omitempty" yaml:"public_endpoint,omitempty"`
-	OAuth            AppOAuth          `json:"oauth,omitempty" yaml:"oauth,omitempty"`
+	PublicEndpoint   AppPublicEndpoint `json:"public_endpoint" yaml:"public_endpoint,omitempty"`
+	OAuth            AppOAuth          `json:"oauth" yaml:"oauth,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
@@ -91,7 +92,7 @@ type AppPublicEndpoint struct {
 }
 
 type AppOAuth struct {
-	Google AppGoogleOAuth `json:"google,omitempty" yaml:"google,omitempty"`
+	Google AppGoogleOAuth `json:"google" yaml:"google,omitempty"`
 }
 
 type AppGoogleOAuth struct {
@@ -224,9 +225,7 @@ func fromInternalConfig(c *config.Config) Config {
 	}
 	for name, cfg := range c.Tunnel.Providers {
 		values := map[string]string{}
-		for k, v := range cfg.Values {
-			values[k] = v
-		}
+		maps.Copy(values, cfg.Values)
 		out.Tunnel.Providers[name] = TunnelProviderConfig{
 			Enabled:   cfg.Enabled,
 			AccountID: cfg.AccountID,
@@ -236,9 +235,7 @@ func fromInternalConfig(c *config.Config) Config {
 	}
 	for _, a := range c.Apps {
 		metadata := map[string]string{}
-		for k, v := range a.Metadata {
-			metadata[k] = v
-		}
+		maps.Copy(metadata, a.Metadata)
 		out.Apps = append(out.Apps, App{
 			Name:             a.Name,
 			LocalHost:        a.LocalHost,
@@ -293,9 +290,7 @@ func toInternalConfig(c Config) *config.Config {
 	}
 	for name, cfg := range c.Tunnel.Providers {
 		values := map[string]string{}
-		for k, v := range cfg.Values {
-			values[k] = v
-		}
+		maps.Copy(values, cfg.Values)
 		out.Tunnel.Providers[name] = config.TunnelProviderCfg{
 			Enabled:   cfg.Enabled,
 			AccountID: cfg.AccountID,
@@ -305,9 +300,7 @@ func toInternalConfig(c Config) *config.Config {
 	}
 	for _, a := range c.Apps {
 		metadata := map[string]string{}
-		for k, v := range a.Metadata {
-			metadata[k] = v
-		}
+		maps.Copy(metadata, a.Metadata)
 		out.Apps = append(out.Apps, config.App{
 			Name:             a.Name,
 			LocalHost:        a.LocalHost,
@@ -384,9 +377,7 @@ func fromInternalAppTunnelHealth(st []app.AppTunnelHealth) []AppTunnelHealth {
 
 func toInternalProviderConfig(cfg ProviderConfig) tunnel.ProviderConfig {
 	values := map[string]string{}
-	for k, v := range cfg.Values {
-		values[k] = v
-	}
+	maps.Copy(values, cfg.Values)
 	return tunnel.ProviderConfig{Values: values}
 }
 
@@ -404,9 +395,7 @@ func fromInternalCapabilities(c tunnel.Capabilities) Capabilities {
 
 func toInternalEndpointRequest(req EndpointRequest) tunnel.EndpointRequest {
 	metadata := map[string]string{}
-	for k, v := range req.Metadata {
-		metadata[k] = v
-	}
+	maps.Copy(metadata, req.Metadata)
 	return tunnel.EndpointRequest{
 		Name:       req.Name,
 		PublicHost: req.PublicHost,
@@ -417,9 +406,7 @@ func toInternalEndpointRequest(req EndpointRequest) tunnel.EndpointRequest {
 
 func fromInternalEndpoint(ep tunnel.Endpoint) Endpoint {
 	metadata := map[string]string{}
-	for k, v := range ep.Metadata {
-		metadata[k] = v
-	}
+	maps.Copy(metadata, ep.Metadata)
 	return Endpoint{
 		ID:       ep.ID,
 		Provider: ep.Provider,
@@ -431,9 +418,7 @@ func fromInternalEndpoint(ep tunnel.Endpoint) Endpoint {
 
 func toInternalStartRequest(req StartRequest) tunnel.StartRequest {
 	sessionEnv := map[string]string{}
-	for k, v := range req.SessionEnv {
-		sessionEnv[k] = v
-	}
+	maps.Copy(sessionEnv, req.SessionEnv)
 	return tunnel.StartRequest{
 		Endpoint: tunnel.Endpoint{
 			ID:       req.Endpoint.ID,
@@ -449,9 +434,7 @@ func toInternalStartRequest(req StartRequest) tunnel.StartRequest {
 
 func fromInternalSession(s tunnel.Session) Session {
 	metadata := map[string]string{}
-	for k, v := range s.Metadata {
-		metadata[k] = v
-	}
+	maps.Copy(metadata, s.Metadata)
 	return Session{
 		ID:         s.ID,
 		Provider:   s.Provider,

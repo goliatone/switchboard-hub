@@ -125,8 +125,8 @@ func normalizeHostname(raw string) (string, error) {
 	if len(host) > 253 {
 		return "", fmt.Errorf("hostname is too long: %q", raw)
 	}
-	labels := strings.Split(host, ".")
-	for _, label := range labels {
+	labels := strings.SplitSeq(host, ".")
+	for label := range labels {
 		if label == "" {
 			return "", fmt.Errorf("hostname contains an empty label: %q", raw)
 		}

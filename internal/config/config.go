@@ -18,7 +18,7 @@ type Config struct {
 	DNS    DNS     `yaml:"dns" json:"dns"`
 	Caddy  Caddy   `yaml:"caddy" json:"caddy"`
 	Routes []Route `yaml:"routes" json:"routes"`
-	Tunnel Tunnels `yaml:"tunnels,omitempty" json:"tunnels,omitempty"`
+	Tunnel Tunnels `yaml:"tunnels,omitempty" json:"tunnels"`
 	Apps   []App   `yaml:"apps,omitempty" json:"apps,omitempty"`
 }
 
@@ -63,8 +63,8 @@ type App struct {
 	LocalPort        int               `yaml:"local_port" json:"local_port"`
 	DialHost         string            `yaml:"dial_host,omitempty" json:"dial_host,omitempty"`
 	ResolvedDialHost string            `yaml:"resolved_dial_host,omitempty" json:"resolved_dial_host,omitempty"`
-	PublicEndpoint   AppPublicEndpoint `yaml:"public_endpoint,omitempty" json:"public_endpoint,omitempty"`
-	OAuth            AppOAuth          `yaml:"oauth,omitempty" json:"oauth,omitempty"`
+	PublicEndpoint   AppPublicEndpoint `yaml:"public_endpoint,omitempty" json:"public_endpoint"`
+	OAuth            AppOAuth          `yaml:"oauth,omitempty" json:"oauth"`
 	Metadata         map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
@@ -78,7 +78,7 @@ type AppPublicEndpoint struct {
 }
 
 type AppOAuth struct {
-	Google AppGoogleOAuth `yaml:"google,omitempty" json:"google,omitempty"`
+	Google AppGoogleOAuth `yaml:"google,omitempty" json:"google"`
 }
 
 type AppGoogleOAuth struct {

@@ -1,13 +1,15 @@
 package switchboard
 
 import (
+	"maps"
+
 	internalstack "github.com/goliatone/switchboard-hub/internal/stack"
 )
 
 type StackFile struct {
 	Version  int               `json:"version" yaml:"version"`
 	Name     string            `json:"name" yaml:"name"`
-	Defaults StackDefaults     `json:"defaults,omitempty" yaml:"defaults,omitempty"`
+	Defaults StackDefaults     `json:"defaults" yaml:"defaults,omitempty"`
 	Services []StackService    `json:"services" yaml:"services"`
 	Outputs  map[string]string `json:"outputs,omitempty" yaml:"outputs,omitempty"`
 }
@@ -167,9 +169,7 @@ func fromInternalStack(st *internalstack.Stack) StackFile {
 			Up:         svc.Up,
 		})
 	}
-	for k, v := range st.Outputs {
-		out.Outputs[k] = v
-	}
+	maps.Copy(out.Outputs, st.Outputs)
 	return out
 }
 

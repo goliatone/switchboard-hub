@@ -160,19 +160,19 @@ type stackReportViewModel struct {
 }
 
 type stackServiceRow struct {
-	Name        string
-	AppName     string
-	LocalHost   string
-	Port        int
-	PublicHost  string
-	Provider    string
-	Session     string
-	Drift       []string
-	Actions     []string
-	Collision   string
-	Managed     bool
-	EndpointID  string
-	Active      bool
+	Name       string
+	AppName    string
+	LocalHost  string
+	Port       int
+	PublicHost string
+	Provider   string
+	Session    string
+	Drift      []string
+	Actions    []string
+	Collision  string
+	Managed    bool
+	EndpointID string
+	Active     bool
 }
 
 func buildStackReportViewModel(command string, report switchboard.StackReport) stackReportViewModel {

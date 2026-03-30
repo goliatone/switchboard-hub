@@ -32,8 +32,8 @@ func NormalizeDialHost(raw string) (string, error) {
 	if strings.Contains(host, ":") {
 		return "", fmt.Errorf("invalid dial host %q (ports are not allowed)", raw)
 	}
-	labels := strings.Split(host, ".")
-	for _, label := range labels {
+	labels := strings.SplitSeq(host, ".")
+	for label := range labels {
 		if label == "" || !dialHostLabelPattern.MatchString(label) {
 			return "", fmt.Errorf("invalid dial host %q", raw)
 		}

@@ -2,6 +2,7 @@ package stack
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 )
@@ -9,7 +10,7 @@ import (
 type Stack struct {
 	Version  int               `yaml:"version" json:"version"`
 	Name     string            `yaml:"name" json:"name"`
-	Defaults Defaults          `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Defaults Defaults          `yaml:"defaults,omitempty" json:"defaults"`
 	Services []Service         `yaml:"services" json:"services"`
 	Outputs  map[string]string `yaml:"outputs,omitempty" json:"outputs,omitempty"`
 
@@ -155,8 +156,6 @@ func cloneStrings(in map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
