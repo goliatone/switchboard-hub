@@ -211,7 +211,7 @@ func Uninstall() error {
 	return nil
 }
 
-func AddRoute(nameOrHost string, port int) error {
+func AddRoute(nameOrHost string, port int, dialHost string) error {
 	p, err := cfgPath()
 	if err != nil {
 		return err
@@ -222,7 +222,14 @@ func AddRoute(nameOrHost string, port int) error {
 	}
 
 	host := normalizeHost(nameOrHost, c.TLD)
-	dial := fmt.Sprintf("127.0.0.1:%d", port)
+	normalizedDialHost, err := NormalizeDialHost(dialHost)
+	if err != nil {
+		return err
+	}
+	if normalizedDialHost == "" {
+		normalizedDialHost = defaultAppDialHost
+	}
+	dial := DialAddress(normalizedDialHost, port)
 
 	found := false
 	for i := range c.Routes {
@@ -236,7 +243,7 @@ func AddRoute(nameOrHost string, port int) error {
 		c.Routes = append(c.Routes, config.Route{Host: host, Dial: dial})
 	}
 	sort.Slice(c.Routes, func(i, j int) bool { return c.Routes[i].Host < c.Routes[j].Host })
-	if err := syncAppFromRoute(c, host, port); err != nil {
+	if err := syncAppFromRoute(c, host, port, normalizedDialHost); err != nil {
 		return err
 	}
 
@@ -278,22 +285,33 @@ func RemoveRoute(nameOrHost string) error {
 }
 
 func ListRoutes() error {
-	p, err := cfgPath()
+	routes, err := ListRoutesInfo()
 	if err != nil {
 		return err
 	}
-	c, err := config.LoadOrDefault(p)
-	if err != nil {
-		return err
-	}
-	if len(c.Routes) == 0 {
+	if len(routes) == 0 {
 		fmt.Println("(no routes)")
 		return nil
 	}
-	for _, r := range c.Routes {
+	for _, r := range routes {
 		fmt.Printf("%-35s -> %s\n", r.Host, r.Dial)
 	}
 	return nil
+}
+
+func ListRoutesInfo() ([]config.Route, error) {
+	p, err := cfgPath()
+	if err != nil {
+		return nil, err
+	}
+	c, err := config.LoadOrDefault(p)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]config.Route, len(c.Routes))
+	copy(out, c.Routes)
+	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
+	return out, nil
 }
 
 func Apply() error {
@@ -304,6 +322,11 @@ func Apply() error {
 	c, err := config.LoadOrDefault(p)
 	if err != nil {
 		return err
+	}
+	if syncRoutesFromApps(c, true) {
+		if err := config.Save(p, c); err != nil {
+			return err
+		}
 	}
 	if err := validateTLSConfig(c); err != nil {
 		return fmt.Errorf("invalid TLS config: %w", err)
@@ -364,133 +387,6 @@ func Open(nameOrHost string, scheme string) error {
 		return sys.Run("open", url)
 	}
 	fmt.Println(url)
-	return nil
-}
-
-func Status() error {
-	p, err := cfgPath()
-	if err != nil {
-		return err
-	}
-	c, err := config.LoadOrDefault(p)
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Config:", p)
-	fmt.Println("TLD:   ", c.TLD)
-	fmt.Println("DNS IP:", c.DNS.IP)
-	fmt.Println("Caddy:", c.Caddy.Admin)
-	fmt.Printf("TLS:    enabled=%t mode=%s\n", c.Caddy.TLS.Enabled, normalizeTLSMode(c.Caddy.TLS.Mode))
-
-	fmt.Println()
-	fmt.Println("Checks:")
-
-	serviceStatus, serviceErr := ServiceStatusInfo()
-	if serviceErr != nil {
-		fmt.Println("- Service:", "error:", serviceErr)
-	} else {
-		switch {
-		case serviceStatus.Running:
-			if serviceStatus.Phase != "" {
-				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d phase=%s\n", yesNo(serviceStatus.Installed), yesNo(true), yesNo(serviceStatus.Ready), serviceStatus.PID, serviceStatus.Phase)
-			} else {
-				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d\n", yesNo(serviceStatus.Installed), yesNo(true), yesNo(serviceStatus.Ready), serviceStatus.PID)
-			}
-		case serviceStatus.Stale:
-			if serviceStatus.StateError != "" {
-				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d error=%s\n", yesNo(serviceStatus.Installed), yesNo(false), serviceStatus.PID, serviceStatus.StateError)
-			} else {
-				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d\n", yesNo(serviceStatus.Installed), yesNo(false), serviceStatus.PID)
-			}
-		default:
-			fmt.Printf("- Service: installed=%s running=%s ready=%s\n", yesNo(serviceStatus.Installed), yesNo(false), yesNo(serviceStatus.Ready))
-		}
-		if len(serviceStatus.MissingEnvVars) > 0 {
-			fmt.Printf("  Missing env for background resume: %s\n", strings.Join(serviceStatus.MissingEnvVars, ", "))
-			if strings.TrimSpace(serviceStatus.EnvFilePath) != "" {
-				fmt.Printf("  Add them to: %s\n", serviceStatus.EnvFilePath)
-			}
-		}
-	}
-
-	if err := validateTLSConfig(c); err != nil {
-		fmt.Println("- TLS:", "invalid:", err)
-	} else {
-		fmt.Println("- TLS:", "config ok")
-	}
-	for _, w := range tlsWarnings(c) {
-		fmt.Println("- TLS:", "warning:", w)
-	}
-
-	if sys.Exists("dig") {
-		out, err := sys.RunCapture("dig", "+short", "switchboard-hub-status."+c.TLD, "@"+c.DNS.IP)
-		if err != nil {
-			fmt.Println("- DNS:", "dig failed:", err)
-		} else if strings.TrimSpace(out) == "" {
-			fmt.Println("- DNS:", "no answer (dnsmasq might not be running/configured)")
-		} else {
-			fmt.Println("- DNS:", "ok (dig returned:", strings.TrimSpace(out)+")")
-		}
-	} else {
-		fmt.Println("- DNS:", "dig not found (skipping)")
-	}
-
-	client := &http.Client{Timeout: 2 * time.Second}
-	req, _ := http.NewRequest("GET", strings.TrimRight(c.Caddy.Admin, "/")+"/config/", nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Println("- Caddy:", "admin unreachable:", err)
-		if serviceErr == nil && serviceStatus.Installed {
-			fmt.Println("  Start: sudo switchd service start")
-		} else {
-			fmt.Println("  Start: sudo switchd caddy run")
-		}
-	} else {
-		_ = resp.Body.Close()
-		if serviceErr == nil && serviceStatus.Running {
-			fmt.Println("- Caddy:", "admin reachable (background service)")
-		} else {
-			fmt.Println("- Caddy:", "admin reachable (external/foreground)")
-		}
-	}
-
-	fmt.Println("- Apps:", fmt.Sprintf("%d configured", len(c.Apps)))
-	if len(c.Apps) == 0 {
-		fmt.Println("  (none)")
-		return nil
-	}
-	for _, a := range c.Apps {
-		fmt.Printf("  - %s: host=%s port=%d\n", a.Name, a.LocalHost, a.LocalPort)
-	}
-
-	health, hErr := appTunnelHealthStatusFromConfig(c)
-	if hErr != nil {
-		fmt.Println("- Tunnel health:", "error:", hErr)
-		return nil
-	}
-	fmt.Println("- Tunnel health:")
-	for _, h := range health {
-		if strings.TrimSpace(h.Provider) == "" {
-			fmt.Printf("  - %s: no tunnel configured\n", h.AppName)
-			continue
-		}
-		base := fmt.Sprintf("  - %s: provider=%s host=%s", h.AppName, h.Provider, h.EndpointHost)
-		if strings.TrimSpace(h.Err) != "" {
-			fmt.Printf("%s status=error %s\n", base, h.Err)
-			continue
-		}
-		status := "not-ready"
-		if h.Ready {
-			status = "ready"
-		}
-		sessionInfo := strings.TrimSpace(sessionSummary(h.SessionPID, h.StartedAt))
-		if sessionInfo != "" {
-			sessionInfo = " " + sessionInfo
-		}
-		fmt.Printf("%s status=%s %s%s\n", base, status, h.Message, sessionInfo)
-	}
-
 	return nil
 }
 
