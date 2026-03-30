@@ -19,6 +19,12 @@ Examples:
 - `https://my-app.test` -> `http://127.0.0.1:3000`
 - `https://api.my-app.test` -> `http://127.0.0.1:4000`
 
+When an app does not set `dial_host`, `switchd` defaults to auto loopback resolution:
+
+- prefer `127.0.0.1` when reachable
+- otherwise try `::1`
+- fall back to `127.0.0.1` if neither is reachable yet
+
 You can also expose an app through a tunnel provider:
 
 - Cloudflare named tunnel
@@ -154,6 +160,12 @@ Add a route:
 ./build/switchd add my-app --port 3000
 ```
 
+Use an explicit upstream host when your local server only binds to IPv6 or a non-default interface:
+
+```bash
+./build/switchd add my-app --port 3000 --dial-host ::1
+```
+
 List routes:
 
 ```bash
@@ -189,6 +201,14 @@ Create app:
 ```bash
 ./build/switchd app create esign --port 3000
 ```
+
+Set an explicit dial host when needed:
+
+```bash
+./build/switchd app create esign --port 3000 --dial-host ::1
+```
+
+If `--dial-host` is omitted, `switchd` stores `dial_host: auto` behavior implicitly and resolves the best loopback host at runtime.
 
 Initialize provider (Cloudflare API mode example):
 
@@ -235,6 +255,14 @@ List apps and provider state:
 ./build/switchd app ls
 ./build/switchd tunnel status
 ```
+
+`app ls` shows tunnel state in the `TUNNEL` column:
+
+- `none`: no public endpoint configured
+- `idle KO`: endpoint exists but no active runtime session
+- `active OK`: endpoint exists and provider reports ready
+- `active KO`: session metadata exists but provider health is failing
+- `active ?` / `idle ?`: provider health could not be queried
 
 ## Daily use (declarative stacks)
 
@@ -311,7 +339,7 @@ func main() {
 	if _, err := client.LoadOrCreateDefaultConfig(); err != nil {
 		log.Fatal(err)
 	}
-	if err := client.CreateApp("demo", 3000); err != nil {
+	if err := client.CreateApp("demo", 3000, &switchboard.CreateAppOptions{}); err != nil {
 		log.Fatal(err)
 	}
 
@@ -342,9 +370,19 @@ Main commands:
 - `tunnel providers|init|status`
 - `service install|log|start|stop|status|uninstall`
 - `tls mkcert`
+- `caddy run`
 - `status`
 - `version`
+- `help [path...]`
 - `uninstall`
+
+Top-level global flags:
+
+- `--debug`
+- `--verbose`
+- `--quiet`
+- `--json`
+- `--output text|json`
 
 Per-command help:
 
@@ -352,6 +390,45 @@ Per-command help:
 ./build/switchd help app
 ./build/switchd help tunnel init
 ```
+
+Command options:
+
+- `switchd init [--tld test] [--dns-ip 10.0.0.1] [--tls] [--tls-mode internal|file] [--tls-cert-file <pem>] [--tls-key-file <pem>]`
+- `switchd add --port <port> [--host <fqdn>] [--dial-host <host>] <name-or-host>`
+- `switchd rm <name-or-host>`
+- `switchd ls`
+- `switchd apply`
+- `switchd open [--scheme http|https] <name-or-host>`
+- `switchd app create --port <port> [--dial-host <host>] <name-or-host>`
+- `switchd app rm <name>`
+- `switchd app ls`
+- `switchd app expose [--provider <provider>] [--public-host <fqdn>] <name>`
+- `switchd app up <name>`
+- `switchd app down <name>`
+- `switchd app oauth enable --provider google --callback-path <path> <name>`
+- `switchd app oauth print --provider google <name>`
+- `switchd stack plan -f <file>`
+- `switchd stack up -f <file>`
+- `switchd stack down -f <file>`
+- `switchd stack status -f <file>`
+- `switchd stack env -f <file>`
+- `switchd tunnel providers`
+- `switchd tunnel init --provider <provider> [--mode api|cli] [--setup] [--non-interactive] [--origincert <path>] [--account-id <id>] [--zone-id <id>] [--base-domain <fqdn>] [--api-token-env <env-var>]`
+- `switchd tunnel status [--provider <provider>]`
+- `switchd service install`
+- `switchd service start`
+- `switchd service stop`
+- `switchd service status`
+- `switchd service log [--lines <n>] [--follow|--no-follow] [--stream stdout|stderr|all]`
+- `switchd service uninstall`
+- `switchd tls mkcert [--install] [--cert-file <path>] [--key-file <path>]`
+- `switchd caddy run`
+- `switchd status`
+- `switchd version`
+- `switchd help [path...]`
+- `switchd uninstall`
+
+`--dial-host` is the upstream bind host that Caddy and tunnel connectors should target. Use it for servers that bind to `::1`, `localhost`, a Docker bridge IP, or another non-default interface.
 
 ## Output modes
 
@@ -378,6 +455,18 @@ Default path:
 Override path with:
 
 - `SWITCHD_CONFIG_PATH=/absolute/path/config.yaml`
+
+App entries support `dial_host`:
+
+```yaml
+apps:
+  - name: esign
+    local_host: esign.test
+    local_port: 3000
+    dial_host: ::1
+```
+
+If `dial_host` is omitted, `switchd` auto-resolves loopback reachability at runtime and writes the effective dial target into generated Caddy routes.
 
 ## TLS notes
 
