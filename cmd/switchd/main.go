@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +30,8 @@ var (
 	serviceStatusInfoRun = app.ServiceStatusInfo
 	statusReportInfo     = app.StatusReportInfo
 	prepareServiceEnvRun = app.PrepareServiceEnvironment
+	serviceLogTUIRun     = runServiceLogTUI
+	statusTUIRun         = runStatusTUI
 	appListTUIRun        = runAppListTUI
 	stackReportTUIRun    = runStackReportTUI
 	serviceStatusTUIRun  = runServiceStatusTUI
@@ -593,15 +596,20 @@ func (c *RmCmd) Run(r *runContext) error {
 type LsCmd struct{}
 
 func (c *LsCmd) Run(r *runContext) error {
+	routes, err := app.ListRoutesInfo()
+	if err != nil {
+		return err
+	}
 	if r.out.opts.JSON {
-		routes, err := app.ListRoutesInfo()
-		if err != nil {
-			return err
-		}
 		r.out.jsonOut(os.Stdout, map[string]any{"routes": routes, "count": len(routes)})
 		return nil
 	}
-	return app.ListRoutes()
+	if len(routes) == 0 {
+		r.out.info("No routes configured", nil)
+		return nil
+	}
+	r.out.printTable([]string{"HOST", "DIAL"}, buildRouteTableRows(routes))
+	return nil
 }
 
 type ApplyCmd struct{}
@@ -661,9 +669,9 @@ func (c *StatusCmd) Run(r *runContext) error {
 	if useTUI, err := r.wantsTUIForStatus(); err != nil {
 		return err
 	} else if useTUI {
-		return runStatusTUI(statusReportInfo, r.out.styles())
+		return statusTUIRun(statusReportInfo, r.out.styles())
 	}
-	renderStatusReport(report)
+	renderStatusReport(r.out, report)
 	return nil
 }
 
@@ -774,7 +782,7 @@ func (c *ServiceStatusCmd) Run(r *runContext) error {
 	} else if useTUI {
 		return serviceStatusTUIRun(st, r.out.styles())
 	}
-	return renderServiceStatusPlain(st)
+	return renderServiceStatusPlain(r.out, st)
 }
 
 type ServiceLogCmd struct {
@@ -795,7 +803,7 @@ func (c *ServiceLogCmd) Run(r *runContext) error {
 	if useTUI, err := r.wantsTUIForServiceLog(); err != nil {
 		return err
 	} else if useTUI {
-		return runServiceLogTUI(app.ServiceLogOptions{
+		return serviceLogTUIRun(app.ServiceLogOptions{
 			Lines:  c.Lines,
 			Follow: follow,
 			Stream: c.Stream,
@@ -897,9 +905,7 @@ func (o cliOutput) textEvent(w io.Writer, level, msg string, fields map[string]a
 func (o cliOutput) ok(msg string, fields map[string]any) {
 	if o.opts.JSON {
 		payload := map[string]any{"ok": true, "level": "ok", "message": msg}
-		for k, v := range fields {
-			payload[k] = v
-		}
+		maps.Copy(payload, fields)
 		o.jsonOut(os.Stdout, payload)
 		return
 	}
@@ -912,9 +918,7 @@ func (o cliOutput) ok(msg string, fields map[string]any) {
 func (o cliOutput) info(msg string, fields map[string]any) {
 	if o.opts.JSON {
 		payload := map[string]any{"ok": true, "level": "info", "message": msg}
-		for k, v := range fields {
-			payload[k] = v
-		}
+		maps.Copy(payload, fields)
 		o.jsonOut(os.Stdout, payload)
 		return
 	}
@@ -927,9 +931,7 @@ func (o cliOutput) info(msg string, fields map[string]any) {
 func (o cliOutput) warn(msg string, fields map[string]any) {
 	if o.opts.JSON {
 		payload := map[string]any{"ok": true, "level": "warn", "message": msg}
-		for k, v := range fields {
-			payload[k] = v
-		}
+		maps.Copy(payload, fields)
 		o.jsonOut(os.Stdout, payload)
 		return
 	}
@@ -1059,63 +1061,6 @@ func (r *runContext) renderStackReport(command string, report switchboard.StackR
 		return stackReportTUIRun(model, r.out.styles())
 	}
 	return r.renderStackReportPlain(model)
-}
-
-func (r *runContext) renderStackReportPlain(model stackReportViewModel) error {
-	fmt.Printf("stack: %s\n", model.StackName)
-	fmt.Printf("file:  %s\n", model.StackFile)
-	r.out.printTable([]string{"SERVICE", "APP", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "PROVIDER", "SESSION", "DRIFT", "ACTIONS"}, buildStackReportTableRows(model))
-	for _, collision := range model.Collisions {
-		fmt.Printf("collision %s\n", collision)
-	}
-	for _, orphan := range model.Orphans {
-		fmt.Printf("orphan: %s\n", orphan)
-	}
-	return nil
-}
-
-func renderServiceStatusPlain(st app.LaunchdServiceStatus) error {
-	fmt.Printf("label:       %s\n", st.Label)
-	fmt.Printf("installed:   %s\n", boolLabel(st.Installed))
-	fmt.Printf("running:     %s\n", boolLabel(st.Running))
-	fmt.Printf("ready:       %s\n", boolLabel(st.Ready))
-	if st.Stale {
-		fmt.Printf("stale:       %s\n", boolLabel(true))
-	}
-	if st.Phase != "" {
-		fmt.Printf("phase:       %s\n", st.Phase)
-	}
-	if st.PID > 0 {
-		fmt.Printf("pid:         %d\n", st.PID)
-	}
-	if st.CaddyPID > 0 {
-		fmt.Printf("caddy pid:   %d\n", st.CaddyPID)
-	}
-	if st.StartedAt != "" {
-		fmt.Printf("started at:  %s\n", st.StartedAt)
-	}
-	if st.ConfigPath != "" {
-		fmt.Printf("config path: %s\n", st.ConfigPath)
-	}
-	if st.EnvFilePath != "" {
-		fmt.Printf("env file:    %s\n", st.EnvFilePath)
-	}
-	if len(st.RequiredEnvVars) > 0 {
-		fmt.Printf("required env: %s\n", strings.Join(st.RequiredEnvVars, ", "))
-	}
-	if len(st.ConfiguredEnvVars) > 0 {
-		fmt.Printf("configured env: %s\n", strings.Join(st.ConfiguredEnvVars, ", "))
-	}
-	if len(st.MissingEnvVars) > 0 {
-		fmt.Printf("missing env: %s\n", strings.Join(st.MissingEnvVars, ", "))
-	}
-	fmt.Printf("plist path:  %s\n", st.PlistPath)
-	fmt.Printf("state path:  %s\n", st.RuntimeStatePath)
-	fmt.Printf("log dir:     %s\n", st.LogDir)
-	if st.StateError != "" {
-		fmt.Printf("state err:   %s\n", st.StateError)
-	}
-	return nil
 }
 
 func findAppByInput(apps []config.App, raw string) (config.App, bool) {
@@ -1281,95 +1226,6 @@ func tunnelInitFields(client *switchboard.Client, rawProvider string) map[string
 		fields["zone_id"] = providerCfg.Zone
 	}
 	return fields
-}
-
-func renderStatusReport(report app.StatusReport) {
-	fmt.Println("Config:", report.ConfigPath)
-	fmt.Println("TLD:   ", report.TLD)
-	fmt.Println("DNS IP:", report.DNSIP)
-	fmt.Println("Caddy:", report.CaddyAdmin)
-	fmt.Printf("TLS:    enabled=%t mode=%s\n", report.TLS.Enabled, report.TLS.Mode)
-
-	fmt.Println()
-	fmt.Println("Checks:")
-
-	if strings.TrimSpace(report.ServiceError) != "" {
-		fmt.Println("- Service:", "error:", report.ServiceError)
-	} else {
-		st := report.Service
-		switch {
-		case st.Running:
-			if st.Phase != "" {
-				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d phase=%s\n", boolLabel(st.Installed), boolLabel(true), boolLabel(st.Ready), st.PID, st.Phase)
-			} else {
-				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d\n", boolLabel(st.Installed), boolLabel(true), boolLabel(st.Ready), st.PID)
-			}
-		case st.Stale:
-			if st.StateError != "" {
-				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d error=%s\n", boolLabel(st.Installed), boolLabel(false), st.PID, st.StateError)
-			} else {
-				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d\n", boolLabel(st.Installed), boolLabel(false), st.PID)
-			}
-		default:
-			fmt.Printf("- Service: installed=%s running=%s ready=%s\n", boolLabel(st.Installed), boolLabel(false), boolLabel(st.Ready))
-		}
-		if len(st.MissingEnvVars) > 0 {
-			fmt.Printf("  Missing env for background resume: %s\n", strings.Join(st.MissingEnvVars, ", "))
-			if strings.TrimSpace(st.EnvFilePath) != "" {
-				fmt.Printf("  Add them to: %s\n", st.EnvFilePath)
-			}
-		}
-	}
-
-	if !report.TLS.Valid {
-		fmt.Println("- TLS:", "invalid:", report.TLS.Error)
-	} else {
-		fmt.Println("- TLS:", "config ok")
-	}
-	for _, warning := range report.TLS.Warnings {
-		fmt.Println("- TLS:", "warning:", warning)
-	}
-
-	fmt.Println("- DNS:", report.DNS.Message)
-	fmt.Println("- Caddy:", report.Caddy.Message)
-	if strings.TrimSpace(report.Caddy.StartHint) != "" {
-		fmt.Println("  Start:", report.Caddy.StartHint)
-	}
-
-	fmt.Println("- Apps:", fmt.Sprintf("%d configured", len(report.Apps)))
-	if len(report.Apps) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for _, item := range report.Apps {
-			fmt.Printf("  - %s: host=%s port=%d\n", item.Name, item.Host, item.Port)
-		}
-	}
-
-	if strings.TrimSpace(report.TunnelHealthError) != "" {
-		fmt.Println("- Tunnel health:", "error:", report.TunnelHealthError)
-		return
-	}
-	fmt.Println("- Tunnel health:")
-	if len(report.TunnelHealth) == 0 {
-		fmt.Println("  (none)")
-		return
-	}
-	for _, item := range report.TunnelHealth {
-		if strings.TrimSpace(item.Provider) == "" {
-			fmt.Printf("  - %s: no tunnel configured\n", item.AppName)
-			continue
-		}
-		base := fmt.Sprintf("  - %s: provider=%s host=%s", item.AppName, item.Provider, item.EndpointHost)
-		if strings.TrimSpace(item.Error) != "" {
-			fmt.Printf("%s status=error %s\n", base, item.Error)
-			continue
-		}
-		sessionInfo := strings.TrimSpace(item.SessionSummary)
-		if sessionInfo != "" {
-			sessionInfo = " " + sessionInfo
-		}
-		fmt.Printf("%s status=%s %s%s\n", base, item.Status, item.Message, sessionInfo)
-	}
 }
 
 func commandName(raw string) string {

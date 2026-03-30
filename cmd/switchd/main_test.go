@@ -300,7 +300,9 @@ func TestServiceLogCommandRejectsInvalidStream(t *testing.T) {
 
 func TestServiceLogCommandSupportsJSONMode(t *testing.T) {
 	orig := serviceLogRun
+	origTUI := serviceLogTUIRun
 	defer func() { serviceLogRun = orig }()
+	defer func() { serviceLogTUIRun = origTUI }()
 
 	serviceLogRun = func(opts app.ServiceLogOptions) error {
 		if !opts.JSON {
@@ -318,6 +320,10 @@ func TestServiceLogCommandSupportsJSONMode(t *testing.T) {
 		_, err := io.WriteString(opts.Stdout, "{\"stream\":\"stdout\",\"line\":\"ready\"}\n")
 		return err
 	}
+	serviceLogTUIRun = func(app.ServiceLogOptions, string, cliStyles) error {
+		t.Fatal("did not expect service log TUI in JSON mode")
+		return nil
+	}
 
 	stdout, _, err := runCLIForTest(t, nil, []string{"--json", "service", "log", "--no-follow"})
 	if err != nil {
@@ -330,7 +336,9 @@ func TestServiceLogCommandSupportsJSONMode(t *testing.T) {
 
 func TestServiceLogCommandSupportsOutputJSONMode(t *testing.T) {
 	orig := serviceLogRun
+	origTUI := serviceLogTUIRun
 	defer func() { serviceLogRun = orig }()
+	defer func() { serviceLogTUIRun = origTUI }()
 
 	serviceLogRun = func(opts app.ServiceLogOptions) error {
 		if !opts.JSON {
@@ -341,6 +349,10 @@ func TestServiceLogCommandSupportsOutputJSONMode(t *testing.T) {
 		}
 		_, err := io.WriteString(opts.Stdout, "{\"stream\":\"stderr\",\"line\":\"warn\"}\n")
 		return err
+	}
+	serviceLogTUIRun = func(app.ServiceLogOptions, string, cliStyles) error {
+		t.Fatal("did not expect service log TUI in JSON mode")
+		return nil
 	}
 
 	stdout, _, err := runCLIForTest(t, nil, []string{"--output", "json", "service", "log", "--stream", "stderr", "--no-follow"})
@@ -400,9 +412,70 @@ func TestServiceLogCommandJSONErrorWritesJSONToStderr(t *testing.T) {
 	}
 }
 
+func TestServiceLogCommandRoutesToTUI(t *testing.T) {
+	origRun := serviceLogRun
+	origTUI := serviceLogTUIRun
+	defer func() {
+		serviceLogRun = origRun
+		serviceLogTUIRun = origTUI
+	}()
+
+	serviceLogRun = func(app.ServiceLogOptions) error {
+		t.Fatal("did not expect plain service log runner when TUI is enabled")
+		return nil
+	}
+
+	called := false
+	serviceLogTUIRun = func(opts app.ServiceLogOptions, command string, styles cliStyles) error {
+		called = true
+		if command != defaultCommandName {
+			t.Fatalf("command=%q want %q", command, defaultCommandName)
+		}
+		if opts.Stream != "stderr" {
+			t.Fatalf("expected stderr stream, got %#v", opts)
+		}
+		if opts.Follow {
+			t.Fatalf("expected --no-follow to disable follow mode, got %#v", opts)
+		}
+		return nil
+	}
+
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"service", "log", "--stream", "stderr", "--no-follow"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			UI:          uiModeAuto,
+			Interactive: true,
+		}},
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected service log TUI runner to be called")
+	}
+}
+
+func TestServiceLogCommandTUIRequiresInteractive(t *testing.T) {
+	_, _, err := runCLIForTest(t, nil, []string{"--ui", "tui", "service", "log", "--no-follow"})
+	if err == nil || !strings.Contains(err.Error(), "--ui=tui requires an interactive terminal") {
+		t.Fatalf("err=%v want interactive terminal error", err)
+	}
+}
+
 func TestStatusCommandSupportsJSONMode(t *testing.T) {
 	orig := statusReportInfo
+	origTUI := statusTUIRun
 	defer func() { statusReportInfo = orig }()
+	defer func() { statusTUIRun = origTUI }()
 
 	statusReportInfo = func() (app.StatusReport, error) {
 		return app.StatusReport{
@@ -425,6 +498,10 @@ func TestStatusCommandSupportsJSONMode(t *testing.T) {
 			},
 		}, nil
 	}
+	statusTUIRun = func(func() (app.StatusReport, error), cliStyles) error {
+		t.Fatal("did not expect status TUI in JSON mode")
+		return nil
+	}
 
 	stdout, _, err := runCLIForTest(t, nil, []string{"--json", "status"})
 	if err != nil {
@@ -439,6 +516,79 @@ func TestStatusCommandSupportsJSONMode(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout=%q missing %q", stdout, want)
 		}
+	}
+}
+
+func TestStatusCommandRoutesToTUI(t *testing.T) {
+	origReport := statusReportInfo
+	origTUI := statusTUIRun
+	defer func() {
+		statusReportInfo = origReport
+		statusTUIRun = origTUI
+	}()
+
+	statusReportInfo = func() (app.StatusReport, error) {
+		return app.StatusReport{
+			ConfigPath: "/tmp/config.yaml",
+			DNS:        app.StatusCheckReport{Status: "ok", Message: "ok"},
+			Caddy:      app.StatusCheckReport{Status: "ok", Message: "ready"},
+			TLS:        app.StatusTLSReport{Enabled: true, Mode: "internal", Valid: true},
+		}, nil
+	}
+
+	called := false
+	statusTUIRun = func(fetch func() (app.StatusReport, error), styles cliStyles) error {
+		called = true
+		report, err := fetch()
+		if err != nil {
+			return err
+		}
+		if report.ConfigPath != "/tmp/config.yaml" {
+			t.Fatalf("unexpected report %#v", report)
+		}
+		return nil
+	}
+
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"--ui", "tui", "status"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			UI:          uiModeTUI,
+			Interactive: true,
+		}},
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected status TUI runner to be called")
+	}
+}
+
+func TestStatusCommandTUIRequiresInteractive(t *testing.T) {
+	orig := statusReportInfo
+	defer func() { statusReportInfo = orig }()
+
+	statusReportInfo = func() (app.StatusReport, error) {
+		return app.StatusReport{
+			ConfigPath: "/tmp/config.yaml",
+			DNS:        app.StatusCheckReport{Status: "ok", Message: "ok"},
+			Caddy:      app.StatusCheckReport{Status: "ok", Message: "ready"},
+			TLS:        app.StatusTLSReport{Enabled: true, Mode: "internal", Valid: true},
+		}, nil
+	}
+
+	_, _, err := runCLIForTest(t, nil, []string{"--ui", "tui", "status"})
+	if err == nil || !strings.Contains(err.Error(), "--ui=tui requires an interactive terminal") {
+		t.Fatalf("err=%v want interactive terminal error", err)
 	}
 }
 
@@ -637,17 +787,19 @@ func TestRenderServiceStatusPlain(t *testing.T) {
 	}
 
 	stdout, err := captureStdout(t, func() error {
-		return renderServiceStatusPlain(st)
+		return renderServiceStatusPlain(cliOutput{}, st)
 	})
 	if err != nil {
 		t.Fatalf("captureStdout returned error: %v", err)
 	}
 	for _, want := range []string{
-		"label:       com.goliatone.switchd",
-		"stale:       yes",
-		"phase:       failed",
-		"missing env: SECRET",
-		"state err:   launchctl failed",
+		"Service",
+		"com.goliatone.switchd",
+		"installed=yes  running=no  ready=no  stale=yes  missing_env=SECRET",
+		"phase:      failed",
+		"missing:    SECRET",
+		"state err: launchctl failed",
+		"Run sudo switchd service start",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout=%q missing %q", stdout, want)
@@ -743,9 +895,12 @@ func TestRenderStackReportPlainIncludesCollisionsAndOrphans(t *testing.T) {
 		t.Fatalf("captureStdout returned error: %v", err)
 	}
 	for _, want := range []string{
-		"stack: carina",
-		"collision worker: managed app already exists",
-		"orphan: app=old-app service=old local_host=old.test public_host=old.example.com",
+		"Stack",
+		"name:    carina",
+		"Collisions",
+		"worker: managed app already exists",
+		"Orphans",
+		"app=old-app service=old local_host=old.test public_host=old.example.com",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout=%q missing %q", stdout, want)
@@ -789,6 +944,53 @@ func TestStackPlanCommandRoutesToTUI(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected stack TUI runner to be called")
+	}
+}
+
+func TestStackStatusCommandRoutesToTUI(t *testing.T) {
+	orig := stackReportTUIRun
+	defer func() { stackReportTUIRun = orig }()
+
+	called := false
+	stackReportTUIRun = func(model stackReportViewModel, styles cliStyles) error {
+		called = true
+		if model.Command != "status" {
+			t.Fatalf("expected status command, got %#v", model)
+		}
+		return nil
+	}
+
+	client, stackPath := setupCLIStackFixture(t)
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"--ui", "tui", "stack", "status", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			UI:          uiModeTUI,
+			Interactive: true,
+		}},
+		client: client,
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected stack status TUI runner to be called")
+	}
+}
+
+func TestStackPlanCommandTUIRequiresInteractive(t *testing.T) {
+	client, stackPath := setupCLIStackFixture(t)
+	_, _, err := runCLIForTest(t, client, []string{"--ui", "tui", "stack", "plan", "-f", stackPath})
+	if err == nil || !strings.Contains(err.Error(), "--ui=tui requires an interactive terminal") {
+		t.Fatalf("err=%v want interactive terminal error", err)
 	}
 }
 
@@ -842,6 +1044,26 @@ func TestServiceStatusCommandRoutesToTUI(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected service status TUI runner to be called")
+	}
+}
+
+func TestServiceStatusCommandTUIRequiresInteractive(t *testing.T) {
+	orig := serviceStatusInfoRun
+	defer func() { serviceStatusInfoRun = orig }()
+
+	serviceStatusInfoRun = func() (app.LaunchdServiceStatus, error) {
+		return app.LaunchdServiceStatus{
+			Label:            "com.goliatone.switchd",
+			Installed:        true,
+			PlistPath:        "/Library/LaunchDaemons/com.goliatone.switchd.plist",
+			RuntimeStatePath: "/var/run/switchboard-hub/daemon-state.json",
+			LogDir:           "/var/log/switchboard-hub",
+		}, nil
+	}
+
+	_, _, err := runCLIForTest(t, nil, []string{"--ui", "tui", "service", "status"})
+	if err == nil || !strings.Contains(err.Error(), "--ui=tui requires an interactive terminal") {
+		t.Fatalf("err=%v want interactive terminal error", err)
 	}
 }
 
