@@ -806,8 +806,10 @@ func (m *statusTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastUpdated = time.Now()
 		}
 		if m.ready {
-			m.viewport.SetContent(renderStatusReportTUI(m.report, m.styles))
-			m.viewport.GotoTop()
+			offset := m.viewport.YOffset
+			content := renderStatusReportTUI(m.report, m.styles)
+			m.viewport.SetContent(content)
+			m.viewport.YOffset = clampViewportOffset(offset, m.viewport.Height, content)
 		}
 		return m, nil
 	case statusTickMsg:
@@ -927,6 +929,18 @@ func renderTUIState(styles cliStyles, kind, detail string) string {
 
 func tuiViewportHeight(totalHeight, reservedLines int) int {
 	return max(5, totalHeight-reservedLines)
+}
+
+func clampViewportOffset(offset, height int, content string) int {
+	if height <= 0 {
+		return 0
+	}
+	lines := 1
+	if content != "" {
+		lines = strings.Count(content, "\n") + 1
+	}
+	maxOffset := max(0, lines-height)
+	return min(max(0, offset), maxOffset)
 }
 
 func renderStatusReportTUI(report app.StatusReport, styles cliStyles) string {

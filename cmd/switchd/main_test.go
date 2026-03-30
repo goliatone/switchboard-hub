@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/goliatone/switchboard-hub/internal/app"
 	"github.com/goliatone/switchboard-hub/internal/config"
 	"github.com/goliatone/switchboard-hub/pkg/switchboard"
@@ -471,6 +472,39 @@ func TestServiceLogCommandTUIRequiresInteractive(t *testing.T) {
 	}
 }
 
+func TestServiceLogCommandPlainModeSkipsTUI(t *testing.T) {
+	origRun := serviceLogRun
+	origTUI := serviceLogTUIRun
+	defer func() {
+		serviceLogRun = origRun
+		serviceLogTUIRun = origTUI
+	}()
+
+	serviceLogTUIRun = func(app.ServiceLogOptions, string, cliStyles) error {
+		t.Fatal("did not expect service log TUI in --ui=plain mode")
+		return nil
+	}
+
+	serviceLogRun = func(opts app.ServiceLogOptions) error {
+		if opts.JSON {
+			t.Fatalf("did not expect JSON mode in plain test: %#v", opts)
+		}
+		if opts.Follow {
+			t.Fatalf("expected --no-follow to disable follow mode, got %#v", opts)
+		}
+		_, err := io.WriteString(opts.Stdout, "plain log line\n")
+		return err
+	}
+
+	stdout, _, err := runCLIInteractiveForTest(t, nil, []string{"--ui", "plain", "service", "log", "--no-follow"})
+	if err != nil {
+		t.Fatalf("runCLIInteractiveForTest returned error: %v", err)
+	}
+	if stdout != "plain log line\n" {
+		t.Fatalf("stdout=%q want plain log line", stdout)
+	}
+}
+
 func TestStatusCommandSupportsJSONMode(t *testing.T) {
 	orig := statusReportInfo
 	origTUI := statusTUIRun
@@ -589,6 +623,72 @@ func TestStatusCommandTUIRequiresInteractive(t *testing.T) {
 	_, _, err := runCLIForTest(t, nil, []string{"--ui", "tui", "status"})
 	if err == nil || !strings.Contains(err.Error(), "--ui=tui requires an interactive terminal") {
 		t.Fatalf("err=%v want interactive terminal error", err)
+	}
+}
+
+func TestStatusCommandPlainModeSkipsTUI(t *testing.T) {
+	origReport := statusReportInfo
+	origTUI := statusTUIRun
+	defer func() {
+		statusReportInfo = origReport
+		statusTUIRun = origTUI
+	}()
+
+	statusReportInfo = func() (app.StatusReport, error) {
+		return app.StatusReport{
+			ConfigPath: "/tmp/config.yaml",
+			TLD:        "test",
+			DNSIP:      "10.0.0.1",
+			CaddyAdmin: "http://127.0.0.1:2019",
+			TLS:        app.StatusTLSReport{Enabled: true, Mode: "internal", Valid: true},
+			DNS:        app.StatusCheckReport{Status: "ok", Message: "dns ready"},
+			Caddy:      app.StatusCheckReport{Status: "ok", Message: "caddy ready"},
+		}, nil
+	}
+	statusTUIRun = func(func() (app.StatusReport, error), cliStyles) error {
+		t.Fatal("did not expect status TUI in --ui=plain mode")
+		return nil
+	}
+
+	stdout, _, err := runCLIInteractiveForTest(t, nil, []string{"--ui", "plain", "status"})
+	if err != nil {
+		t.Fatalf("runCLIInteractiveForTest returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "Configuration") {
+		t.Fatalf("stdout=%q missing configuration section", stdout)
+	}
+}
+
+func TestStatusTUIRefreshPreservesViewportOffset(t *testing.T) {
+	model := &statusTUIModel{styles: newCLIStyles(false)}
+	report := app.StatusReport{
+		ConfigPath: "/tmp/config.yaml",
+		TLD:        "test",
+		DNSIP:      "10.0.0.1",
+		CaddyAdmin: "http://127.0.0.1:2019",
+		TLS:        app.StatusTLSReport{Enabled: true, Mode: "internal", Valid: true},
+		DNS:        app.StatusCheckReport{Status: "ok", Message: "dns ready"},
+		Caddy:      app.StatusCheckReport{Status: "ok", Message: "caddy ready"},
+		Apps: []app.StatusAppReport{
+			{Name: "app-1", Host: "app-1.test", Port: 3001},
+			{Name: "app-2", Host: "app-2.test", Port: 3002},
+			{Name: "app-3", Host: "app-3.test", Port: 3003},
+			{Name: "app-4", Host: "app-4.test", Port: 3004},
+			{Name: "app-5", Host: "app-5.test", Port: 3005},
+			{Name: "app-6", Host: "app-6.test", Port: 3006},
+		},
+	}
+
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 12})
+	model = updated.(*statusTUIModel)
+	updated, _ = model.Update(statusLoadedMsg{report: report})
+	model = updated.(*statusTUIModel)
+	model.viewport.YOffset = 3
+
+	updated, _ = model.Update(statusLoadedMsg{report: report})
+	model = updated.(*statusTUIModel)
+	if model.viewport.YOffset != 3 {
+		t.Fatalf("viewport offset=%d want 3", model.viewport.YOffset)
 	}
 }
 
@@ -735,6 +835,27 @@ func TestLsCommandTextOutputIsSorted(t *testing.T) {
 	}
 	if apiIndex > webIndex {
 		t.Fatalf("expected sorted output, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "-> 127.0.0.1:4000") || strings.Contains(stdout, "HOST") {
+		t.Fatalf("expected legacy arrow output, got %q", stdout)
+	}
+}
+
+func TestLsCommandQuietStillShowsEmptyState(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := config.Default("test", "10.0.0.1")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save returned error: %v", err)
+	}
+	t.Setenv("SWITCHD_CONFIG_PATH", cfgPath)
+
+	stdout, _, err := runCLIForTest(t, nil, []string{"--quiet", "ls"})
+	if err != nil {
+		t.Fatalf("runCLIForTest returned error: %v", err)
+	}
+	if stdout != "(no routes)\n" {
+		t.Fatalf("stdout=%q want empty routes marker", stdout)
 	}
 }
 
@@ -947,6 +1068,83 @@ func TestStackPlanCommandRoutesToTUI(t *testing.T) {
 	}
 }
 
+func TestStackPlanCommandPlainModeSkipsTUI(t *testing.T) {
+	orig := stackReportTUIRun
+	defer func() { stackReportTUIRun = orig }()
+
+	stackReportTUIRun = func(model stackReportViewModel, styles cliStyles) error {
+		t.Fatal("did not expect stack TUI in --ui=plain mode")
+		return nil
+	}
+
+	client, stackPath := setupCLIStackFixture(t)
+	stdout, _, err := runCLIInteractiveForTest(t, client, []string{"--ui", "plain", "stack", "plan", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("runCLIInteractiveForTest returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "Stack") || !strings.Contains(stdout, "create_app") {
+		t.Fatalf("stdout=%q missing plain stack summary", stdout)
+	}
+}
+
+func TestStackUpCommandRoutesToTUI(t *testing.T) {
+	orig := stackReportTUIRun
+	defer func() { stackReportTUIRun = orig }()
+
+	called := false
+	stackReportTUIRun = func(model stackReportViewModel, styles cliStyles) error {
+		called = true
+		if model.Command != "up" {
+			t.Fatalf("expected up command, got %#v", model)
+		}
+		return nil
+	}
+
+	client, stackPath := setupCLIStackFixture(t)
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"--ui", "tui", "stack", "up", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			UI:          uiModeTUI,
+			Interactive: true,
+		}},
+		client: client,
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected stack up TUI runner to be called")
+	}
+}
+
+func TestStackUpCommandPlainModeSkipsTUI(t *testing.T) {
+	orig := stackReportTUIRun
+	defer func() { stackReportTUIRun = orig }()
+
+	stackReportTUIRun = func(model stackReportViewModel, styles cliStyles) error {
+		t.Fatal("did not expect stack up TUI in --ui=plain mode")
+		return nil
+	}
+
+	client, stackPath := setupCLIStackFixture(t)
+	stdout, _, err := runCLIInteractiveForTest(t, client, []string{"--ui", "plain", "stack", "up", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("runCLIInteractiveForTest returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "Stack") || !strings.Contains(stdout, "up") {
+		t.Fatalf("stdout=%q missing plain stack up summary", stdout)
+	}
+}
+
 func TestStackStatusCommandRoutesToTUI(t *testing.T) {
 	orig := stackReportTUIRun
 	defer func() { stackReportTUIRun = orig }()
@@ -983,6 +1181,83 @@ func TestStackStatusCommandRoutesToTUI(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected stack status TUI runner to be called")
+	}
+}
+
+func TestStackStatusCommandPlainModeSkipsTUI(t *testing.T) {
+	orig := stackReportTUIRun
+	defer func() { stackReportTUIRun = orig }()
+
+	stackReportTUIRun = func(model stackReportViewModel, styles cliStyles) error {
+		t.Fatal("did not expect stack status TUI in --ui=plain mode")
+		return nil
+	}
+
+	client, stackPath := setupCLIStackFixture(t)
+	stdout, _, err := runCLIInteractiveForTest(t, client, []string{"--ui", "plain", "stack", "status", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("runCLIInteractiveForTest returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "Stack") || !strings.Contains(stdout, "status") {
+		t.Fatalf("stdout=%q missing stack status summary", stdout)
+	}
+}
+
+func TestStackDownCommandRoutesToTUI(t *testing.T) {
+	orig := stackReportTUIRun
+	defer func() { stackReportTUIRun = orig }()
+
+	called := false
+	stackReportTUIRun = func(model stackReportViewModel, styles cliStyles) error {
+		called = true
+		if model.Command != "down" {
+			t.Fatalf("expected down command, got %#v", model)
+		}
+		return nil
+	}
+
+	client, stackPath := setupCLIStackFixture(t)
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"--ui", "tui", "stack", "down", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			UI:          uiModeTUI,
+			Interactive: true,
+		}},
+		client: client,
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected stack down TUI runner to be called")
+	}
+}
+
+func TestStackDownCommandPlainModeSkipsTUI(t *testing.T) {
+	orig := stackReportTUIRun
+	defer func() { stackReportTUIRun = orig }()
+
+	stackReportTUIRun = func(model stackReportViewModel, styles cliStyles) error {
+		t.Fatal("did not expect stack down TUI in --ui=plain mode")
+		return nil
+	}
+
+	client, stackPath := setupCLIStackFixture(t)
+	stdout, _, err := runCLIInteractiveForTest(t, client, []string{"--ui", "plain", "stack", "down", "-f", stackPath})
+	if err != nil {
+		t.Fatalf("runCLIInteractiveForTest returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "Stack") || !strings.Contains(stdout, "down") {
+		t.Fatalf("stdout=%q missing plain stack down summary", stdout)
 	}
 }
 
@@ -1064,6 +1339,39 @@ func TestServiceStatusCommandTUIRequiresInteractive(t *testing.T) {
 	_, _, err := runCLIForTest(t, nil, []string{"--ui", "tui", "service", "status"})
 	if err == nil || !strings.Contains(err.Error(), "--ui=tui requires an interactive terminal") {
 		t.Fatalf("err=%v want interactive terminal error", err)
+	}
+}
+
+func TestServiceStatusCommandPlainModeSkipsTUI(t *testing.T) {
+	origStatus := serviceStatusInfoRun
+	origTUI := serviceStatusTUIRun
+	defer func() {
+		serviceStatusInfoRun = origStatus
+		serviceStatusTUIRun = origTUI
+	}()
+
+	serviceStatusInfoRun = func() (app.LaunchdServiceStatus, error) {
+		return app.LaunchdServiceStatus{
+			Label:            "com.goliatone.switchd",
+			Installed:        true,
+			Running:          true,
+			Ready:            true,
+			PlistPath:        "/Library/LaunchDaemons/com.goliatone.switchd.plist",
+			RuntimeStatePath: "/var/run/switchboard-hub/daemon-state.json",
+			LogDir:           "/var/log/switchboard-hub",
+		}, nil
+	}
+	serviceStatusTUIRun = func(app.LaunchdServiceStatus, cliStyles) error {
+		t.Fatal("did not expect service status TUI in --ui=plain mode")
+		return nil
+	}
+
+	stdout, _, err := runCLIInteractiveForTest(t, nil, []string{"--ui", "plain", "service", "status"})
+	if err != nil {
+		t.Fatalf("runCLIInteractiveForTest returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "Service") || !strings.Contains(stdout, "installed=yes  running=yes  ready=yes") {
+		t.Fatalf("stdout=%q missing service status summary", stdout)
 	}
 }
 
@@ -1319,6 +1627,37 @@ func TestAppLsShowsUnknownTunnelHealthWhenStatusUnavailable(t *testing.T) {
 	if !strings.Contains(stdout, "active ?") {
 		t.Fatalf("stdout=%q missing active ?", stdout)
 	}
+	if !strings.Contains(stdout, "Tunnel health unavailable") || !strings.Contains(stdout, "provider status unavailable") {
+		t.Fatalf("stdout=%q missing tunnel health warning", stdout)
+	}
+}
+
+func TestAppLsQuietStillShowsEmptyState(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	client := switchboard.New(switchboard.Options{
+		ConfigPath: cfgPath,
+		ProviderRegistry: testCLIRegistry{
+			provider: newTestCLIProvider(),
+		},
+		ApplyFunc: func(string, switchboard.Config) error { return nil },
+	})
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		t.Fatalf("LoadOrCreateDefaultConfig returned error: %v", err)
+	}
+	cfg.Caddy.TLS.Enabled = false
+	if err := client.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+
+	stdout, _, err := runCLIForTest(t, client, []string{"--quiet", "app", "ls"})
+	if err != nil {
+		t.Fatalf("runCLIForTest returned error: %v", err)
+	}
+	if stdout != "(no apps configured)\n" {
+		t.Fatalf("stdout=%q want empty apps marker", stdout)
+	}
 }
 
 func TestBuildAppListViewModel(t *testing.T) {
@@ -1456,6 +1795,45 @@ func TestAppLsCommandRoutesToTUI(t *testing.T) {
 	}
 }
 
+func TestAppLsCommandPlainModeSkipsTUI(t *testing.T) {
+	orig := appListTUIRun
+	defer func() { appListTUIRun = orig }()
+
+	appListTUIRun = func(model appListViewModel, styles cliStyles) error {
+		t.Fatal("did not expect app list TUI in --ui=plain mode")
+		return nil
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	client := switchboard.New(switchboard.Options{
+		ConfigPath: cfgPath,
+		ProviderRegistry: testCLIRegistry{
+			provider: newTestCLIProvider(),
+		},
+		ApplyFunc: func(string, switchboard.Config) error { return nil },
+	})
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		t.Fatalf("LoadOrCreateDefaultConfig returned error: %v", err)
+	}
+	cfg.Caddy.TLS.Enabled = false
+	if err := client.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig returned error: %v", err)
+	}
+	if err := client.CreateApp("demo", 3000, nil); err != nil {
+		t.Fatalf("CreateApp returned error: %v", err)
+	}
+
+	stdout, _, err := runCLIInteractiveForTest(t, client, []string{"--ui", "plain", "app", "ls"})
+	if err != nil {
+		t.Fatalf("runCLIInteractiveForTest returned error: %v", err)
+	}
+	if strings.Contains(stdout, "No apps configured") || !strings.Contains(stdout, "demo") {
+		t.Fatalf("stdout=%q missing plain app list", stdout)
+	}
+}
+
 func TestAppLsCommandJSONBypassesTUI(t *testing.T) {
 	orig := appListTUIRun
 	defer func() { appListTUIRun = orig }()
@@ -1514,13 +1892,20 @@ func setupCLIStackFixture(t *testing.T) (*switchboard.Client, string) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	stackPath := filepath.Join(dir, "stack.yaml")
 
-	client := switchboard.New(switchboard.Options{ConfigPath: cfgPath})
+	client := switchboard.New(switchboard.Options{
+		ConfigPath: cfgPath,
+		ProviderRegistry: testCLIRegistry{
+			provider: newTestCLIProvider(),
+		},
+		ApplyFunc: func(string, switchboard.Config) error { return nil },
+	})
 	cfg, err := client.LoadOrCreateDefaultConfig()
 	if err != nil {
 		t.Fatalf("LoadOrCreateDefaultConfig returned error: %v", err)
 	}
 	cfg.TLD = "test"
 	cfg.Caddy.TLS.Enabled = false
+	cfg.Tunnel.DefaultProvider = "mock"
 	if err := client.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig returned error: %v", err)
 	}
@@ -1542,6 +1927,14 @@ outputs:
 }
 
 func runCLIForTest(t *testing.T, client *switchboard.Client, args []string) (string, string, error) {
+	return runCLIWithInteractiveForTest(t, client, args, false)
+}
+
+func runCLIInteractiveForTest(t *testing.T, client *switchboard.Client, args []string) (string, string, error) {
+	return runCLIWithInteractiveForTest(t, client, args, true)
+}
+
+func runCLIWithInteractiveForTest(t *testing.T, client *switchboard.Client, args []string, interactive bool) (string, string, error) {
 	t.Helper()
 	cli := CLI{}
 	parser, err := newParser(&cli, defaultCommandName)
@@ -1561,6 +1954,7 @@ func runCLIForTest(t *testing.T, client *switchboard.Client, args []string) (str
 				Quiet:       cli.Quiet,
 				JSON:        cli.useJSON(),
 				UI:          cli.uiMode(),
+				Interactive: interactive,
 			}},
 			client: client,
 		})

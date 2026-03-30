@@ -193,12 +193,7 @@ func (c *AppLsCmd) Run(r *runContext) error {
 	} else if useTUI {
 		return appListTUIRun(model, r.out.styles())
 	}
-	if len(model.Rows) == 0 {
-		r.out.info("No apps configured", nil)
-		return nil
-	}
-	r.out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, buildAppListTableRows(model))
-	return nil
+	return renderAppListPlain(r.out, model)
 }
 
 type AppExposeCmd struct {
@@ -604,12 +599,7 @@ func (c *LsCmd) Run(r *runContext) error {
 		r.out.jsonOut(os.Stdout, map[string]any{"routes": routes, "count": len(routes)})
 		return nil
 	}
-	if len(routes) == 0 {
-		r.out.info("No routes configured", nil)
-		return nil
-	}
-	r.out.printTable([]string{"HOST", "DIAL"}, buildRouteTableRows(routes))
-	return nil
+	return renderRoutesPlain(r.out, routes)
 }
 
 type ApplyCmd struct{}

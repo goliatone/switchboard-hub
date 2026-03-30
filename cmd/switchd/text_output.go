@@ -83,6 +83,47 @@ func buildRouteTableRows(routes []config.Route) [][]string {
 	return rows
 }
 
+func renderRoutesPlain(_ cliOutput, routes []config.Route) error {
+	if len(routes) == 0 {
+		fmt.Println("(no routes)")
+		return nil
+	}
+	for _, route := range routes {
+		fmt.Printf("%-35s -> %s\n", route.Host, route.Dial)
+	}
+	return nil
+}
+
+func renderAppListPlain(out cliOutput, model appListViewModel) error {
+	if len(model.Rows) == 0 {
+		fmt.Println("(no apps configured)")
+		renderAppListHealthWarnings(out, model)
+		return nil
+	}
+	out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, buildAppListTableRows(model))
+	renderAppListHealthWarnings(out, model)
+	return nil
+}
+
+func renderAppListHealthWarnings(out cliOutput, model appListViewModel) {
+	seen := map[string]struct{}{}
+	if detail := strings.TrimSpace(model.HealthError); detail != "" {
+		seen[detail] = struct{}{}
+		out.warn("Tunnel health unavailable", map[string]any{"detail": detail})
+	}
+	for _, row := range model.Rows {
+		detail := strings.TrimSpace(row.TunnelError)
+		if detail == "" {
+			continue
+		}
+		if _, ok := seen[detail]; ok {
+			continue
+		}
+		seen[detail] = struct{}{}
+		out.warn("Tunnel health unavailable", map[string]any{"detail": detail})
+	}
+}
+
 func buildStatusAppTableRows(apps []app.StatusAppReport) [][]string {
 	rows := make([][]string, 0, len(apps))
 	for _, item := range apps {
