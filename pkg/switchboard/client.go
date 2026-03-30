@@ -71,8 +71,8 @@ func (c *Client) SaveConfig(cfg Config) error {
 	return c.service.SaveConfig(toInternalConfig(cfg))
 }
 
-func (c *Client) CreateApp(nameOrHost string, port int) error {
-	return c.service.CreateApp(nameOrHost, port)
+func (c *Client) CreateApp(nameOrHost string, port int, dialHost string) error {
+	return c.service.CreateApp(nameOrHost, port, dialHost)
 }
 
 func (c *Client) RemoveApp(name string) error {
@@ -118,6 +118,14 @@ func (c *Client) TunnelStatus(providerName string) ([]TunnelProviderStatus, erro
 		return nil, err
 	}
 	return fromInternalProviderStatus(statuses), nil
+}
+
+func (c *Client) AppTunnelHealthStatus() ([]AppTunnelHealth, error) {
+	statuses, err := c.service.AppTunnelHealthStatus()
+	if err != nil {
+		return nil, err
+	}
+	return fromInternalAppTunnelHealth(statuses), nil
 }
 
 type internalStoreAdapter struct {
