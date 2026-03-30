@@ -54,13 +54,14 @@ type TunnelProviderConfig struct {
 }
 
 type App struct {
-	Name           string            `json:"name" yaml:"name"`
-	LocalHost      string            `json:"local_host" yaml:"local_host"`
-	LocalPort      int               `json:"local_port" yaml:"local_port"`
-	DialHost       string            `json:"dial_host,omitempty" yaml:"dial_host,omitempty"`
-	PublicEndpoint AppPublicEndpoint `json:"public_endpoint,omitempty" yaml:"public_endpoint,omitempty"`
-	OAuth          AppOAuth          `json:"oauth,omitempty" yaml:"oauth,omitempty"`
-	Metadata       map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	Name             string            `json:"name" yaml:"name"`
+	LocalHost        string            `json:"local_host" yaml:"local_host"`
+	LocalPort        int               `json:"local_port" yaml:"local_port"`
+	DialHost         string            `json:"dial_host,omitempty" yaml:"dial_host,omitempty"`
+	ResolvedDialHost string            `json:"resolved_dial_host,omitempty" yaml:"resolved_dial_host,omitempty"`
+	PublicEndpoint   AppPublicEndpoint `json:"public_endpoint,omitempty" yaml:"public_endpoint,omitempty"`
+	OAuth            AppOAuth          `json:"oauth,omitempty" yaml:"oauth,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 type CreateAppOptions struct {
@@ -239,10 +240,11 @@ func fromInternalConfig(c *config.Config) Config {
 			metadata[k] = v
 		}
 		out.Apps = append(out.Apps, App{
-			Name:      a.Name,
-			LocalHost: a.LocalHost,
-			LocalPort: a.LocalPort,
-			DialHost:  a.DialHost,
+			Name:             a.Name,
+			LocalHost:        a.LocalHost,
+			LocalPort:        a.LocalPort,
+			DialHost:         a.DialHost,
+			ResolvedDialHost: a.ResolvedDialHost,
 			PublicEndpoint: AppPublicEndpoint{
 				Provider:             a.PublicEndpoint.Provider,
 				Host:                 a.PublicEndpoint.Host,
@@ -307,10 +309,11 @@ func toInternalConfig(c Config) *config.Config {
 			metadata[k] = v
 		}
 		out.Apps = append(out.Apps, config.App{
-			Name:      a.Name,
-			LocalHost: a.LocalHost,
-			LocalPort: a.LocalPort,
-			DialHost:  a.DialHost,
+			Name:             a.Name,
+			LocalHost:        a.LocalHost,
+			LocalPort:        a.LocalPort,
+			DialHost:         a.DialHost,
+			ResolvedDialHost: a.ResolvedDialHost,
 			PublicEndpoint: config.AppPublicEndpoint{
 				Provider:             a.PublicEndpoint.Provider,
 				Host:                 a.PublicEndpoint.Host,
