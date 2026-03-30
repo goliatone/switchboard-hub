@@ -24,6 +24,10 @@ var (
 	buildDate = "unknown"
 	buildTags = ""
 	gitTag    = ""
+
+	serviceLogRun        = app.ServiceLog
+	statusReportInfo     = app.StatusReportInfo
+	prepareServiceEnvRun = app.PrepareServiceEnvironment
 )
 
 const defaultCommandName = "switchd"
@@ -99,27 +103,37 @@ type AppCmd struct {
 type AppCreateCmd struct {
 	NameOrHost string `arg:"" name:"name-or-host" help:"App name or host."`
 	Port       int    `name:"port" required:"" help:"Local port to proxy to."`
+	DialHost   string `name:"dial-host" help:"Explicit upstream host for the app port, for example 127.0.0.1 or ::1. Defaults to auto detection."`
 }
 
 func (c *AppCreateCmd) Run(r *runContext) error {
 	if c.Port <= 0 || c.Port > 65535 {
 		return fmt.Errorf("--port must be 1..65535")
 	}
-	if err := r.client.CreateApp(c.NameOrHost, c.Port); err != nil {
+	if err := r.client.CreateApp(c.NameOrHost, c.Port, c.DialHost); err != nil {
 		return err
 	}
 	apps, err := r.client.ListApps()
 	if err == nil {
 		if created, ok := findSwitchboardAppByInput(apps, c.NameOrHost); ok {
-			r.out.ok("App created", map[string]any{
-				"app":   created.Name,
-				"local": created.LocalHost,
-				"port":  created.LocalPort,
-			})
+			fields := map[string]any{
+				"app":       created.Name,
+				"local":     created.LocalHost,
+				"port":      created.LocalPort,
+				"dial_host": "auto",
+			}
+			if strings.TrimSpace(created.DialHost) != "" {
+				fields["dial_host"] = created.DialHost
+			}
+			r.out.ok("App created", fields)
 			return nil
 		}
 	}
-	r.out.ok("App created", map[string]any{"app": c.NameOrHost, "port": c.Port})
+	fallbackDialHost := "auto"
+	if strings.TrimSpace(c.DialHost) != "" {
+		fallbackDialHost = strings.TrimSpace(c.DialHost)
+	}
+	r.out.ok("App created", map[string]any{"app": c.NameOrHost, "port": c.Port, "dial_host": fallbackDialHost})
 	return nil
 }
 
@@ -142,13 +156,24 @@ func (c *AppLsCmd) Run(r *runContext) error {
 	if err != nil {
 		return err
 	}
+	health, healthErr := r.client.AppTunnelHealthStatus()
 	if r.out.opts.JSON {
-		r.out.jsonOut(os.Stdout, map[string]any{"apps": apps, "count": len(apps)})
+		payload := map[string]any{"apps": apps, "count": len(apps)}
+		if healthErr == nil {
+			payload["health"] = health
+		}
+		r.out.jsonOut(os.Stdout, payload)
 		return nil
 	}
 	if len(apps) == 0 {
 		r.out.info("No apps configured", nil)
 		return nil
+	}
+	healthByApp := map[string]switchboard.AppTunnelHealth{}
+	if healthErr == nil {
+		for _, item := range health {
+			healthByApp[strings.ToLower(strings.TrimSpace(item.AppName))] = item
+		}
 	}
 	rows := make([][]string, 0, len(apps))
 	for _, a := range apps {
@@ -166,7 +191,7 @@ func (c *AppLsCmd) Run(r *runContext) error {
 			fmt.Sprintf("%d", a.LocalPort),
 			public,
 			oauth,
-			switchboardAppSessionLabel(a),
+			switchboardAppSessionLabel(a, healthByApp[strings.ToLower(strings.TrimSpace(a.Name))]),
 		})
 	}
 	r.out.printTable([]string{"NAME", "LOCAL_HOST", "PORT", "PUBLIC_HOST", "OAUTH", "TUNNEL"}, rows)
@@ -451,8 +476,34 @@ func (c *TunnelInitCmd) Run(r *runContext) error {
 	}); err != nil {
 		return err
 	}
-	r.out.ok("Tunnel provider initialized", map[string]any{"provider": c.Provider, "mode": c.Mode, "base_domain": c.BaseDomain})
-	return nil
+	fields := tunnelInitFields(r.client, c.Provider)
+	if _, ok := fields["provider"]; !ok && strings.TrimSpace(c.Provider) != "" {
+		fields["provider"] = strings.TrimSpace(c.Provider)
+	}
+	if report, err := prepareServiceEnvRun(); err == nil {
+		if strings.TrimSpace(report.EnvFilePath) != "" {
+			fields["env_file"] = report.EnvFilePath
+		}
+		if len(report.RequiredEnvVars) > 0 {
+			fields["required_env"] = strings.Join(report.RequiredEnvVars, ", ")
+		}
+		if len(report.MissingEnvVars) > 0 {
+			fields["missing_env"] = strings.Join(report.MissingEnvVars, ", ")
+		}
+		if report.EnvFileCreated {
+			fields["env_file_created"] = true
+		}
+		if report.EnvFileUpdated {
+			fields["env_file_updated"] = true
+		}
+		r.out.ok("Tunnel provider initialized", fields)
+		renderServiceEnvWarnings(r, report)
+		return nil
+	} else {
+		r.out.ok("Tunnel provider initialized", fields)
+		r.out.warn("Unable to prepare service env template", map[string]any{"detail": err})
+		return nil
+	}
 }
 
 type TunnelStatusCmd struct {
@@ -495,6 +546,7 @@ type AddCmd struct {
 	NameOrHost string `arg:"" optional:"" name:"name-or-host" help:"Route name or host."`
 	Port       int    `name:"port" required:"" help:"Local port to proxy to."`
 	Host       string `name:"host" help:"Explicit host (mutually exclusive with positional arg)."`
+	DialHost   string `name:"dial-host" help:"Explicit upstream host for the route port, for example 127.0.0.1 or ::1."`
 }
 
 func (c *AddCmd) Run(r *runContext) error {
@@ -511,10 +563,14 @@ func (c *AddCmd) Run(r *runContext) error {
 	if nameOrHost == "" {
 		nameOrHost = strings.TrimSpace(c.NameOrHost)
 	}
-	if err := app.AddRoute(nameOrHost, c.Port); err != nil {
+	if err := app.AddRoute(nameOrHost, c.Port, c.DialHost); err != nil {
 		return err
 	}
-	r.out.ok("Route added", map[string]any{"host": nameOrHost, "port": c.Port})
+	fields := map[string]any{"host": nameOrHost, "port": c.Port}
+	if strings.TrimSpace(c.DialHost) != "" {
+		fields["dial_host"] = strings.TrimSpace(c.DialHost)
+	}
+	r.out.ok("Route added", fields)
 	return nil
 }
 
@@ -538,7 +594,12 @@ type LsCmd struct{}
 
 func (c *LsCmd) Run(r *runContext) error {
 	if r.out.opts.JSON {
-		return fmt.Errorf("JSON output is not supported for this command yet")
+		routes, err := app.ListRoutesInfo()
+		if err != nil {
+			return err
+		}
+		r.out.jsonOut(os.Stdout, map[string]any{"routes": routes, "count": len(routes)})
+		return nil
 	}
 	return app.ListRoutes()
 }
@@ -589,10 +650,16 @@ func (c *UninstallCmd) Run(r *runContext) error {
 type StatusCmd struct{}
 
 func (c *StatusCmd) Run(r *runContext) error {
-	if r.out.opts.JSON {
-		return fmt.Errorf("JSON output is not supported for this command yet")
+	report, err := statusReportInfo()
+	if err != nil {
+		return err
 	}
-	return app.Status()
+	if r.out.opts.JSON {
+		r.out.jsonOut(os.Stdout, report)
+		return nil
+	}
+	renderStatusReport(report)
+	return nil
 }
 
 type CaddyCmd struct {
@@ -742,9 +809,6 @@ type ServiceLogCmd struct {
 }
 
 func (c *ServiceLogCmd) Run(r *runContext) error {
-	if r.out.opts.JSON {
-		return fmt.Errorf("JSON output is not supported for service log yet")
-	}
 	follow := c.Follow
 	if c.NoFollow {
 		follow = false
@@ -752,10 +816,11 @@ func (c *ServiceLogCmd) Run(r *runContext) error {
 	if c.Lines < 0 {
 		return fmt.Errorf("--lines must be >= 0")
 	}
-	return app.ServiceLog(app.ServiceLogOptions{
+	return serviceLogRun(app.ServiceLogOptions{
 		Lines:  c.Lines,
 		Follow: follow,
 		Stream: c.Stream,
+		JSON:   r.out.opts.JSON,
 		Stdout: os.Stdout,
 		Stderr: os.Stdout,
 	})
@@ -1086,19 +1151,40 @@ func appSessionLabel(a config.App) string {
 	return "none"
 }
 
-func switchboardAppSessionLabel(a switchboard.App) string {
+func switchboardAppSessionLabel(a switchboard.App, health switchboard.AppTunnelHealth) string {
+	state := "none"
 	if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
-		return "active"
+		state = "active"
+	} else if strings.TrimSpace(a.PublicEndpoint.Host) != "" {
+		state = "idle"
 	}
-	if strings.TrimSpace(a.PublicEndpoint.Host) != "" {
-		return "idle"
+	if state == "none" {
+		return state
 	}
-	return "none"
+	if health.Ready {
+		return state + " OK"
+	}
+	return state + " KO"
 }
 
 func renderServiceEnvWarnings(r *runContext, report app.ServiceEnvironmentReport) {
 	if len(report.RequiredEnvVars) == 0 {
 		return
+	}
+	if report.EnvFileCreated {
+		r.out.info("Created background service env template", map[string]any{
+			"env_file": report.EnvFilePath,
+		})
+	} else if report.EnvFileUpdated {
+		r.out.info("Updated background service env template", map[string]any{
+			"env_file": report.EnvFilePath,
+		})
+	}
+	if len(report.EnvFileTemplateVars) > 0 {
+		r.out.info("Added placeholder env vars to service env file", map[string]any{
+			"env_file": report.EnvFilePath,
+			"added":    strings.Join(report.EnvFileTemplateVars, ", "),
+		})
 	}
 	r.out.info("Background service credentials are loaded from launchd environment, not your interactive shell", map[string]any{
 		"env_file": report.EnvFilePath,
@@ -1120,6 +1206,143 @@ func renderServiceEnvWarnings(r *runContext, report app.ServiceEnvironmentReport
 	r.out.info("Add the missing values to the service env file and re-run `sudo switchd service start` or `sudo switchd service install`", map[string]any{
 		"env_file": report.EnvFilePath,
 	})
+}
+
+func tunnelInitFields(client *switchboard.Client, rawProvider string) map[string]any {
+	fields := map[string]any{}
+	if client == nil {
+		if strings.TrimSpace(rawProvider) != "" {
+			fields["provider"] = strings.TrimSpace(rawProvider)
+		}
+		return fields
+	}
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		if strings.TrimSpace(rawProvider) != "" {
+			fields["provider"] = strings.TrimSpace(rawProvider)
+		}
+		return fields
+	}
+	providerName := strings.ToLower(strings.TrimSpace(rawProvider))
+	if providerName == "" {
+		providerName = strings.ToLower(strings.TrimSpace(cfg.Tunnel.DefaultProvider))
+	}
+	if providerName == "" {
+		return fields
+	}
+	fields["provider"] = providerName
+	providerCfg, ok := cfg.Tunnel.Providers[providerName]
+	if !ok {
+		return fields
+	}
+	if mode := strings.TrimSpace(providerCfg.Values["mode"]); mode != "" {
+		fields["mode"] = mode
+	}
+	if baseDomain := strings.TrimSpace(providerCfg.Values["base_domain"]); baseDomain != "" {
+		fields["base_domain"] = baseDomain
+	}
+	if tokenEnv := strings.TrimSpace(providerCfg.Values["api_token_env"]); tokenEnv != "" {
+		fields["api_token_env"] = tokenEnv
+	}
+	if originCert := strings.TrimSpace(providerCfg.Values["origincert"]); originCert != "" {
+		fields["origincert"] = originCert
+	}
+	if providerCfg.AccountID != "" {
+		fields["account_id"] = providerCfg.AccountID
+	}
+	if providerCfg.Zone != "" {
+		fields["zone_id"] = providerCfg.Zone
+	}
+	return fields
+}
+
+func renderStatusReport(report app.StatusReport) {
+	fmt.Println("Config:", report.ConfigPath)
+	fmt.Println("TLD:   ", report.TLD)
+	fmt.Println("DNS IP:", report.DNSIP)
+	fmt.Println("Caddy:", report.CaddyAdmin)
+	fmt.Printf("TLS:    enabled=%t mode=%s\n", report.TLS.Enabled, report.TLS.Mode)
+
+	fmt.Println()
+	fmt.Println("Checks:")
+
+	if strings.TrimSpace(report.ServiceError) != "" {
+		fmt.Println("- Service:", "error:", report.ServiceError)
+	} else {
+		st := report.Service
+		switch {
+		case st.Running:
+			if st.Phase != "" {
+				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d phase=%s\n", boolLabel(st.Installed), boolLabel(true), boolLabel(st.Ready), st.PID, st.Phase)
+			} else {
+				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d\n", boolLabel(st.Installed), boolLabel(true), boolLabel(st.Ready), st.PID)
+			}
+		case st.Stale:
+			if st.StateError != "" {
+				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d error=%s\n", boolLabel(st.Installed), boolLabel(false), st.PID, st.StateError)
+			} else {
+				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d\n", boolLabel(st.Installed), boolLabel(false), st.PID)
+			}
+		default:
+			fmt.Printf("- Service: installed=%s running=%s ready=%s\n", boolLabel(st.Installed), boolLabel(false), boolLabel(st.Ready))
+		}
+		if len(st.MissingEnvVars) > 0 {
+			fmt.Printf("  Missing env for background resume: %s\n", strings.Join(st.MissingEnvVars, ", "))
+			if strings.TrimSpace(st.EnvFilePath) != "" {
+				fmt.Printf("  Add them to: %s\n", st.EnvFilePath)
+			}
+		}
+	}
+
+	if !report.TLS.Valid {
+		fmt.Println("- TLS:", "invalid:", report.TLS.Error)
+	} else {
+		fmt.Println("- TLS:", "config ok")
+	}
+	for _, warning := range report.TLS.Warnings {
+		fmt.Println("- TLS:", "warning:", warning)
+	}
+
+	fmt.Println("- DNS:", report.DNS.Message)
+	fmt.Println("- Caddy:", report.Caddy.Message)
+	if strings.TrimSpace(report.Caddy.StartHint) != "" {
+		fmt.Println("  Start:", report.Caddy.StartHint)
+	}
+
+	fmt.Println("- Apps:", fmt.Sprintf("%d configured", len(report.Apps)))
+	if len(report.Apps) == 0 {
+		fmt.Println("  (none)")
+	} else {
+		for _, item := range report.Apps {
+			fmt.Printf("  - %s: host=%s port=%d\n", item.Name, item.Host, item.Port)
+		}
+	}
+
+	if strings.TrimSpace(report.TunnelHealthError) != "" {
+		fmt.Println("- Tunnel health:", "error:", report.TunnelHealthError)
+		return
+	}
+	fmt.Println("- Tunnel health:")
+	if len(report.TunnelHealth) == 0 {
+		fmt.Println("  (none)")
+		return
+	}
+	for _, item := range report.TunnelHealth {
+		if strings.TrimSpace(item.Provider) == "" {
+			fmt.Printf("  - %s: no tunnel configured\n", item.AppName)
+			continue
+		}
+		base := fmt.Sprintf("  - %s: provider=%s host=%s", item.AppName, item.Provider, item.EndpointHost)
+		if strings.TrimSpace(item.Error) != "" {
+			fmt.Printf("%s status=error %s\n", base, item.Error)
+			continue
+		}
+		sessionInfo := strings.TrimSpace(item.SessionSummary)
+		if sessionInfo != "" {
+			sessionInfo = " " + sessionInfo
+		}
+		fmt.Printf("%s status=%s %s%s\n", base, item.Status, item.Message, sessionInfo)
+	}
 }
 
 func commandName(raw string) string {
