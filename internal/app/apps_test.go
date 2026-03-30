@@ -8,7 +8,7 @@ import (
 
 func TestUpsertAppWritesLegacyRoute(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	got, err := upsertApp(c, "esign", 3000)
+	got, err := upsertApp(c, "esign", 3000, "")
 	if err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
@@ -18,6 +18,9 @@ func TestUpsertAppWritesLegacyRoute(t *testing.T) {
 	}
 	if got.LocalHost != "esign.test" {
 		t.Fatalf("unexpected local host: %q", got.LocalHost)
+	}
+	if got.DialHost != "" {
+		t.Fatalf("unexpected explicit dial host: %q", got.DialHost)
 	}
 	if len(c.Routes) != 1 {
 		t.Fatalf("expected 1 legacy route, got %d", len(c.Routes))
@@ -29,20 +32,20 @@ func TestUpsertAppWritesLegacyRoute(t *testing.T) {
 
 func TestUpsertAppRejectsDuplicateName(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	if _, err := upsertApp(c, "esign", 3000); err != nil {
+	if _, err := upsertApp(c, "esign", 3000, ""); err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
-	if _, err := upsertApp(c, "esign", 3001); err == nil {
+	if _, err := upsertApp(c, "esign", 3001, ""); err == nil {
 		t.Fatal("expected duplicate app name error")
 	}
 }
 
 func TestUpsertAppRejectsDuplicateHost(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	if _, err := upsertApp(c, "esign.test", 3000); err != nil {
+	if _, err := upsertApp(c, "esign.test", 3000, ""); err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
-	if _, err := upsertApp(c, "esign.test", 3001); err == nil {
+	if _, err := upsertApp(c, "esign.test", 3001, ""); err == nil {
 		t.Fatal("expected duplicate app host error")
 	}
 }
@@ -71,10 +74,10 @@ func TestNormalizeAppNameInput(t *testing.T) {
 
 func TestSyncAppFromRouteUpdatesExistingHost(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	if _, err := upsertApp(c, "esign", 3000); err != nil {
+	if _, err := upsertApp(c, "esign", 3000, ""); err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
-	if err := syncAppFromRoute(c, "esign.test", 4000); err != nil {
+	if err := syncAppFromRoute(c, "esign.test", 4000, "::1"); err != nil {
 		t.Fatalf("syncAppFromRoute returned error: %v", err)
 	}
 	if len(c.Apps) != 1 {
@@ -83,15 +86,32 @@ func TestSyncAppFromRouteUpdatesExistingHost(t *testing.T) {
 	if c.Apps[0].LocalPort != 4000 {
 		t.Fatalf("expected updated port 4000, got %d", c.Apps[0].LocalPort)
 	}
+	if c.Apps[0].DialHost != "::1" {
+		t.Fatalf("expected updated dial host ::1, got %q", c.Apps[0].DialHost)
+	}
 }
 
 func TestRemoveAppByHost(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	if _, err := upsertApp(c, "esign", 3000); err != nil {
+	if _, err := upsertApp(c, "esign", 3000, ""); err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
 	removeAppByHost(c, "esign.test")
 	if len(c.Apps) != 0 {
 		t.Fatalf("expected no apps, got %d", len(c.Apps))
+	}
+}
+
+func TestUpsertAppStoresExplicitDialHost(t *testing.T) {
+	c := config.Default("test", "10.0.0.1")
+	got, err := upsertApp(c, "esign", 3000, "::1")
+	if err != nil {
+		t.Fatalf("upsertApp returned error: %v", err)
+	}
+	if got.DialHost != "::1" {
+		t.Fatalf("unexpected dial host: %q", got.DialHost)
+	}
+	if c.Routes[0].Dial != "[::1]:3000" {
+		t.Fatalf("unexpected route dial: %q", c.Routes[0].Dial)
 	}
 }

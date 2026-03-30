@@ -116,6 +116,9 @@ routes:
 	if c.Apps[0].LocalPort != 3000 {
 		t.Fatalf("unexpected app local_port: %d", c.Apps[0].LocalPort)
 	}
+	if c.Apps[0].DialHost != "127.0.0.1" {
+		t.Fatalf("unexpected app dial_host: %q", c.Apps[0].DialHost)
+	}
 	if c.Tunnel.DefaultProvider != "cloudflare" {
 		t.Fatalf("unexpected default tunnel provider: %q", c.Tunnel.DefaultProvider)
 	}
@@ -148,6 +151,7 @@ func TestSaveLoad_RoundTripMixedLegacyAndNewSchema(t *testing.T) {
 				Name:      "esign",
 				LocalHost: "esign.test",
 				LocalPort: 3000,
+				DialHost:  "::1",
 				PublicEndpoint: AppPublicEndpoint{
 					Provider:             "cloudflare",
 					Host:                 "esign-oauth.dev.example.com",
@@ -180,6 +184,9 @@ func TestSaveLoad_RoundTripMixedLegacyAndNewSchema(t *testing.T) {
 	}
 	if len(got.Apps) != 1 || got.Apps[0].PublicEndpoint.Host != "esign-oauth.dev.example.com" {
 		t.Fatalf("unexpected apps after roundtrip: %#v", got.Apps)
+	}
+	if got.Apps[0].DialHost != "::1" {
+		t.Fatalf("unexpected dial_host: %q", got.Apps[0].DialHost)
 	}
 	if got.Apps[0].PublicEndpoint.ActiveSessionPID != 4242 {
 		t.Fatalf("unexpected active_session_pid: %d", got.Apps[0].PublicEndpoint.ActiveSessionPID)

@@ -114,7 +114,7 @@ func TestIntegration_AppExposeOAuthUpDownWithMockProvider(t *testing.T) {
 	cfgPath, caddyServer := setupIntegrationConfig(t)
 	defer caddyServer.Close()
 
-	if err := CreateApp("esign", 3000); err != nil {
+	if err := CreateApp("esign", 3000, ""); err != nil {
 		t.Fatalf("CreateApp returned error: %v", err)
 	}
 	if err := ExposeApp("esign", "mock", "esign-oauth.dev.example.com"); err != nil {
@@ -181,7 +181,7 @@ routes:
 	if len(apps) == 0 {
 		t.Fatal("expected migrated apps from legacy routes")
 	}
-	if err := AddRoute("new-legacy", 4040); err != nil {
+	if err := AddRoute("new-legacy", 4040, ""); err != nil {
 		t.Fatalf("AddRoute returned error: %v", err)
 	}
 	if err := RemoveRoute("new-legacy.test"); err != nil {

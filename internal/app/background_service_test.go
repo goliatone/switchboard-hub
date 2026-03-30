@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -471,6 +472,89 @@ func TestServiceStatusInfoIncludesEnvironmentReport(t *testing.T) {
 	}
 }
 
+func TestPrepareServiceEnvironmentCreatesTemplateForMissingVars(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default("test", "10.0.0.1")
+	cfg.Tunnel.Providers["cloudflare"] = config.TunnelProviderCfg{
+		Enabled: true,
+		Values: map[string]string{
+			"mode":        "api",
+			"account_id":  "acct-1",
+			"zone_id":     "zone-1",
+			"base_domain": "tnl.example.com",
+		},
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save returned error: %v", err)
+	}
+	t.Setenv("SWITCHD_CONFIG_PATH", cfgPath)
+	t.Setenv("SWITCHD_CF_API_TOKEN", "")
+
+	report, err := PrepareServiceEnvironment()
+	if err != nil {
+		t.Fatalf("PrepareServiceEnvironment returned error: %v", err)
+	}
+	if !report.EnvFileCreated || !report.EnvFileUpdated {
+		t.Fatalf("expected env file creation, got %#v", report)
+	}
+	if len(report.EnvFileTemplateVars) != 1 || report.EnvFileTemplateVars[0] != "SWITCHD_CF_API_TOKEN" {
+		t.Fatalf("unexpected template vars: %#v", report.EnvFileTemplateVars)
+	}
+	data, err := os.ReadFile(report.EnvFilePath)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if got := string(data); !strings.Contains(got, "SWITCHD_CF_API_TOKEN=\n") {
+		t.Fatalf("unexpected env file contents %q", got)
+	}
+}
+
+func TestPrepareServiceEnvironmentAppendsMissingVars(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default("test", "10.0.0.1")
+	cfg.Tunnel.Providers["cloudflare"] = config.TunnelProviderCfg{
+		Enabled: true,
+		Values: map[string]string{
+			"mode":          "api",
+			"account_id":    "acct-1",
+			"zone_id":       "zone-1",
+			"base_domain":   "tnl.example.com",
+			"api_token_env": "CF_SERVICE_TOKEN",
+		},
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save returned error: %v", err)
+	}
+	envPath := serviceEnvPath(cfgPath)
+	if err := os.WriteFile(envPath, []byte("EXISTING_TOKEN=value"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	t.Setenv("SWITCHD_CONFIG_PATH", cfgPath)
+	t.Setenv("CF_SERVICE_TOKEN", "")
+
+	report, err := PrepareServiceEnvironment()
+	if err != nil {
+		t.Fatalf("PrepareServiceEnvironment returned error: %v", err)
+	}
+	if report.EnvFileCreated {
+		t.Fatalf("did not expect env file creation: %#v", report)
+	}
+	if !report.EnvFileUpdated {
+		t.Fatalf("expected env file update: %#v", report)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "EXISTING_TOKEN=value\n") {
+		t.Fatalf("expected existing entry to be preserved, got %q", got)
+	}
+	if !strings.Contains(got, "CF_SERVICE_TOKEN=\n") {
+		t.Fatalf("expected missing token placeholder, got %q", got)
+	}
+}
+
 func TestEnsureAppRuntimeKeepsAlivePersistedPID(t *testing.T) {
 	provider := &backgroundTestProvider{statusReady: false, startPID: 5151}
 	reg := tunnel.NewRegistry()
@@ -628,6 +712,104 @@ func TestServiceLogSnapshotStderrOnly(t *testing.T) {
 	}
 }
 
+func TestServiceLogSnapshotJSONStdoutOnly(t *testing.T) {
+	restore := installTestServicePaths(t)
+	defer restore()
+
+	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStdoutPath, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	var out strings.Builder
+	if err := serviceLogWithContext(context.Background(), ServiceLogOptions{
+		Lines:  2,
+		Follow: false,
+		Stream: "stdout",
+		JSON:   true,
+		Stdout: &out,
+	}); err != nil {
+		t.Fatalf("serviceLogWithContext returned error: %v", err)
+	}
+
+	events := decodeServiceLogEvents(t, out.String())
+	if got, want := events, []serviceLogEvent{
+		{Stream: "stdout", Line: "two"},
+		{Stream: "stdout", Line: "three"},
+	}; !serviceLogEventsEqual(got, want) {
+		t.Fatalf("events=%#v want %#v", got, want)
+	}
+}
+
+func TestServiceLogSnapshotJSONStderrOnly(t *testing.T) {
+	restore := installTestServicePaths(t)
+	defer restore()
+
+	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStderrPath, []byte("warn\nboom\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	var out strings.Builder
+	if err := serviceLogWithContext(context.Background(), ServiceLogOptions{
+		Lines:  1,
+		Follow: false,
+		Stream: "stderr",
+		JSON:   true,
+		Stderr: &out,
+	}); err != nil {
+		t.Fatalf("serviceLogWithContext returned error: %v", err)
+	}
+
+	events := decodeServiceLogEvents(t, out.String())
+	if got, want := events, []serviceLogEvent{
+		{Stream: "stderr", Line: "boom"},
+	}; !serviceLogEventsEqual(got, want) {
+		t.Fatalf("events=%#v want %#v", got, want)
+	}
+}
+
+func TestServiceLogSnapshotJSONCombinedStreams(t *testing.T) {
+	restore := installTestServicePaths(t)
+	defer restore()
+
+	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStdoutPath, []byte("ready\nserving\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile stdout returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStderrPath, []byte("warning\npanic\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile stderr returned error: %v", err)
+	}
+
+	var out strings.Builder
+	if err := serviceLogWithContext(context.Background(), ServiceLogOptions{
+		Lines:  2,
+		Follow: false,
+		Stream: "all",
+		JSON:   true,
+		Stdout: &out,
+		Stderr: &out,
+	}); err != nil {
+		t.Fatalf("serviceLogWithContext returned error: %v", err)
+	}
+
+	events := decodeServiceLogEvents(t, out.String())
+	if got, want := events, []serviceLogEvent{
+		{Stream: "stdout", Line: "ready"},
+		{Stream: "stdout", Line: "serving"},
+		{Stream: "stderr", Line: "warning"},
+		{Stream: "stderr", Line: "panic"},
+	}; !serviceLogEventsEqual(got, want) {
+		t.Fatalf("events=%#v want %#v", got, want)
+	}
+}
+
 func TestServiceLogSnapshotCombinedPrefixesAndOrder(t *testing.T) {
 	restore := installTestServicePaths(t)
 	defer restore()
@@ -690,6 +872,44 @@ func TestServiceLogSnapshotPreservesExistingLines(t *testing.T) {
 	}
 }
 
+func TestServiceLogSnapshotJSONPreservesExistingLinesAndBlankLines(t *testing.T) {
+	restore := installTestServicePaths(t)
+	defer restore()
+
+	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStdoutPath, []byte("wrote: /Users/test/.config/switchboard-hub/last-applied.json\n\nready\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile stdout returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStderrPath, []byte("{\"level\":\"warn\",\"msg\":\"$HOME environment variable is empty - please fix; some assets might be stored in ./caddy\"}\npanic\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile stderr returned error: %v", err)
+	}
+
+	var out strings.Builder
+	if err := serviceLogWithContext(context.Background(), ServiceLogOptions{
+		Lines:  10,
+		Follow: false,
+		Stream: "all",
+		JSON:   true,
+		Stdout: &out,
+		Stderr: &out,
+	}); err != nil {
+		t.Fatalf("serviceLogWithContext returned error: %v", err)
+	}
+
+	events := decodeServiceLogEvents(t, out.String())
+	if got, want := events, []serviceLogEvent{
+		{Stream: "stdout", Line: "wrote: /Users/test/.config/switchboard-hub/last-applied.json"},
+		{Stream: "stdout", Line: ""},
+		{Stream: "stdout", Line: "ready"},
+		{Stream: "stderr", Line: "{\"level\":\"warn\",\"msg\":\"$HOME environment variable is empty - please fix; some assets might be stored in ./caddy\"}"},
+		{Stream: "stderr", Line: "panic"},
+	}; !serviceLogEventsEqual(got, want) {
+		t.Fatalf("events=%#v want %#v", got, want)
+	}
+}
+
 func TestServiceLogFollowStreamsAppendedLines(t *testing.T) {
 	restore := installTestServicePaths(t)
 	defer restore()
@@ -720,6 +940,44 @@ func TestServiceLogFollowStreamsAppendedLines(t *testing.T) {
 		t.Fatalf("appendFile returned error: %v", err)
 	}
 	waitForBufferContains(t, buf, "alpha\n")
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serviceLogWithContext returned error: %v", err)
+	}
+}
+
+func TestServiceLogFollowStreamsAppendedLinesJSON(t *testing.T) {
+	restore := installTestServicePaths(t)
+	defer restore()
+
+	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStdoutPath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	buf := &lockedBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		done <- serviceLogWithContext(ctx, ServiceLogOptions{
+			Lines:  0,
+			Follow: true,
+			Stream: "stdout",
+			JSON:   true,
+			Stdout: buf,
+		})
+	}()
+
+	time.Sleep(2 * serviceLogPollInterval)
+	if err := appendFile(serviceStdoutPath, "alpha\n"); err != nil {
+		t.Fatalf("appendFile returned error: %v", err)
+	}
+	waitForBufferContains(t, buf, "{\"stream\":\"stdout\",\"line\":\"alpha\"}\n")
 
 	cancel()
 	if err := <-done; err != nil {
@@ -836,6 +1094,52 @@ func TestServiceLogFollowHandlesRecreatedFiles(t *testing.T) {
 	}
 }
 
+func TestServiceLogFollowHandlesRecreatedFilesJSON(t *testing.T) {
+	restore := installTestServicePaths(t)
+	defer restore()
+
+	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStdoutPath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	buf := &lockedBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		done <- serviceLogWithContext(ctx, ServiceLogOptions{
+			Lines:  0,
+			Follow: true,
+			Stream: "stdout",
+			JSON:   true,
+			Stdout: buf,
+		})
+	}()
+
+	time.Sleep(2 * serviceLogPollInterval)
+	if err := appendFile(serviceStdoutPath, "before\n"); err != nil {
+		t.Fatalf("appendFile returned error: %v", err)
+	}
+	waitForBufferContains(t, buf, "{\"stream\":\"stdout\",\"line\":\"before\"}\n")
+
+	if err := os.Remove(serviceStdoutPath); err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
+	if err := os.WriteFile(serviceStdoutPath, []byte("after\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	waitForBufferContains(t, buf, "{\"stream\":\"stdout\",\"line\":\"after\"}\n")
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serviceLogWithContext returned error: %v", err)
+	}
+}
+
 func TestServiceLogMissingLogsReturnsHelpfulError(t *testing.T) {
 	restore := installTestServicePaths(t)
 	defer restore()
@@ -896,6 +1200,36 @@ func installTestServicePaths(t *testing.T) func() {
 		launchctlRun = origLaunchctl
 		effectiveUID = origUID
 	}
+}
+
+func decodeServiceLogEvents(t *testing.T, raw string) []serviceLogEvent {
+	t.Helper()
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	lines := strings.Split(raw, "\n")
+	events := make([]serviceLogEvent, 0, len(lines))
+	for _, line := range lines {
+		var event serviceLogEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("json.Unmarshal(%q) returned error: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func serviceLogEventsEqual(a, b []serviceLogEvent) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func installBackgroundTestProvider(t *testing.T, provider *backgroundTestProvider) func() {

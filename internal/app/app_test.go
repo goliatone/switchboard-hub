@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,5 +71,96 @@ func TestCfgPathCanBeOverriddenForTesting(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("unexpected cfgPath override: got=%q want=%q", got, want)
+	}
+}
+
+func TestStatusReportInfoIncludesChecksAndApps(t *testing.T) {
+	restore := installTestServicePaths(t)
+	defer restore()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default("test", "10.0.0.1")
+	cfg.Caddy.Admin = "http://127.0.0.1:2019"
+	cfg.Caddy.TLS.Enabled = true
+	cfg.Caddy.TLS.Mode = "internal"
+	cfg.Apps = []config.App{
+		{Name: "web", LocalHost: "web.test", LocalPort: 3000},
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save returned error: %v", err)
+	}
+	t.Setenv("SWITCHD_CONFIG_PATH", cfgPath)
+
+	origExists := statusCommandExists
+	origRunCapture := statusRunCapture
+	origCheckCaddy := statusCheckCaddy
+	defer func() {
+		statusCommandExists = origExists
+		statusRunCapture = origRunCapture
+		statusCheckCaddy = origCheckCaddy
+	}()
+
+	statusCommandExists = func(name string) bool { return name == "dig" }
+	statusRunCapture = func(name string, args ...string) (string, error) {
+		return "10.0.0.1\n", nil
+	}
+	statusCheckCaddy = func(string) error { return nil }
+
+	report, err := StatusReportInfo()
+	if err != nil {
+		t.Fatalf("StatusReportInfo returned error: %v", err)
+	}
+	if report.TLS.Mode != "internal" || !report.TLS.Valid {
+		t.Fatalf("unexpected tls report: %#v", report.TLS)
+	}
+	if report.DNS.Status != "ok" {
+		t.Fatalf("unexpected dns report: %#v", report.DNS)
+	}
+	if report.Caddy.Status != "ok" {
+		t.Fatalf("unexpected caddy report: %#v", report.Caddy)
+	}
+	if len(report.Apps) != 1 || report.Apps[0].Name != "web" {
+		t.Fatalf("unexpected apps report: %#v", report.Apps)
+	}
+	if len(report.TunnelHealth) != 1 || report.TunnelHealth[0].Status != "none" {
+		t.Fatalf("unexpected tunnel health: %#v", report.TunnelHealth)
+	}
+}
+
+func TestStatusReportInfoSetsCaddyStartHintWhenUnavailable(t *testing.T) {
+	restore := installTestServicePaths(t)
+	defer restore()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default("test", "10.0.0.1")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save returned error: %v", err)
+	}
+	t.Setenv("SWITCHD_CONFIG_PATH", cfgPath)
+
+	origExists := statusCommandExists
+	origRunCapture := statusRunCapture
+	origCheckCaddy := statusCheckCaddy
+	defer func() {
+		statusCommandExists = origExists
+		statusRunCapture = origRunCapture
+		statusCheckCaddy = origCheckCaddy
+	}()
+
+	statusCommandExists = func(string) bool { return false }
+	statusRunCapture = func(string, ...string) (string, error) {
+		return "", nil
+	}
+	statusCheckCaddy = func(string) error { return errors.New("connection refused") }
+
+	report, err := StatusReportInfo()
+	if err != nil {
+		t.Fatalf("StatusReportInfo returned error: %v", err)
+	}
+	if report.Caddy.Status != "error" {
+		t.Fatalf("unexpected caddy status: %#v", report.Caddy)
+	}
+	if report.Caddy.StartHint == "" {
+		t.Fatalf("expected start hint in caddy status: %#v", report.Caddy)
 	}
 }
