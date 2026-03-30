@@ -228,7 +228,10 @@ func AddRoute(nameOrHost string, port int, dialHost string) error {
 	}
 	effectiveDialHost := normalizedDialHost
 	if effectiveDialHost == "" {
-		effectiveDialHost = ResolveDialHost(config.App{LocalPort: port})
+		effectiveDialHost = defaultAppDialHost
+		if resolvedDialHost := resolveRouteDialHost(normalizedDialHost, port); resolvedDialHost != "" {
+			effectiveDialHost = resolvedDialHost
+		}
 	}
 	dial := DialAddress(effectiveDialHost, port)
 
@@ -324,7 +327,7 @@ func Apply() error {
 	if err != nil {
 		return err
 	}
-	if syncRoutesFromApps(c, true) {
+	if syncRoutesFromApps(c) {
 		if err := config.Save(p, c); err != nil {
 			return err
 		}

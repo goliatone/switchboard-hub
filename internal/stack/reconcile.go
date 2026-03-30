@@ -412,7 +412,7 @@ func desiredProvider(cfg *config.Config, svc ResolvedService) string {
 }
 
 func routeMatches(cfg *config.Config, actual config.App, host string, port int) bool {
-	dial := app.DialAddress(app.ResolveDialHost(actual), port)
+	dial := app.DialAddress(app.ConfiguredDialHost(actual), port)
 	for _, route := range cfg.Routes {
 		if strings.EqualFold(route.Host, host) {
 			return route.Dial == dial
@@ -422,7 +422,7 @@ func routeMatches(cfg *config.Config, actual config.App, host string, port int) 
 }
 
 func ensureRoute(cfg *config.Config, actual config.App, host string, port int) bool {
-	dial := app.DialAddress(app.ResolveDialHost(actual), port)
+	dial := app.DialAddress(app.ConfiguredDialHost(actual), port)
 	for i := range cfg.Routes {
 		if strings.EqualFold(cfg.Routes[i].Host, host) {
 			if cfg.Routes[i].Dial == dial {

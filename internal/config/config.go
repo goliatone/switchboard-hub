@@ -58,13 +58,14 @@ type TunnelProviderCfg struct {
 }
 
 type App struct {
-	Name           string            `yaml:"name" json:"name"`
-	LocalHost      string            `yaml:"local_host" json:"local_host"`
-	LocalPort      int               `yaml:"local_port" json:"local_port"`
-	DialHost       string            `yaml:"dial_host,omitempty" json:"dial_host,omitempty"`
-	PublicEndpoint AppPublicEndpoint `yaml:"public_endpoint,omitempty" json:"public_endpoint,omitempty"`
-	OAuth          AppOAuth          `yaml:"oauth,omitempty" json:"oauth,omitempty"`
-	Metadata       map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Name             string            `yaml:"name" json:"name"`
+	LocalHost        string            `yaml:"local_host" json:"local_host"`
+	LocalPort        int               `yaml:"local_port" json:"local_port"`
+	DialHost         string            `yaml:"dial_host,omitempty" json:"dial_host,omitempty"`
+	ResolvedDialHost string            `yaml:"resolved_dial_host,omitempty" json:"resolved_dial_host,omitempty"`
+	PublicEndpoint   AppPublicEndpoint `yaml:"public_endpoint,omitempty" json:"public_endpoint,omitempty"`
+	OAuth            AppOAuth          `yaml:"oauth,omitempty" json:"oauth,omitempty"`
+	Metadata         map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
 type AppPublicEndpoint struct {
@@ -259,10 +260,11 @@ func normalizeApps(apps []App) []App {
 	out := make([]App, 0, len(apps))
 	for _, a := range apps {
 		n := App{
-			Name:      normalizeAppName(a.Name),
-			LocalHost: normalizeHost(a.LocalHost),
-			LocalPort: a.LocalPort,
-			DialHost:  normalizeDialHost(a.DialHost),
+			Name:             normalizeAppName(a.Name),
+			LocalHost:        normalizeHost(a.LocalHost),
+			LocalPort:        a.LocalPort,
+			DialHost:         normalizeDialHost(a.DialHost),
+			ResolvedDialHost: normalizeDialHost(a.ResolvedDialHost),
 			PublicEndpoint: AppPublicEndpoint{
 				Provider:             strings.ToLower(strings.TrimSpace(a.PublicEndpoint.Provider)),
 				Host:                 normalizeHost(a.PublicEndpoint.Host),
@@ -286,6 +288,9 @@ func normalizeApps(apps []App) []App {
 				continue
 			}
 			n.Metadata[k] = v
+		}
+		if n.DialHost != "" {
+			n.ResolvedDialHost = ""
 		}
 		out = append(out, n)
 	}
@@ -332,11 +337,11 @@ func migrateRoutesToApps(c *Config) {
 			name = fmt.Sprintf("%s-%d", base, i)
 		}
 		c.Apps = append(c.Apps, App{
-			Name:      name,
-			LocalHost: host,
-			LocalPort: port,
-			DialHost:  dialHost,
-			Metadata:  map[string]string{"source": "migrated-route"},
+			Name:             name,
+			LocalHost:        host,
+			LocalPort:        port,
+			ResolvedDialHost: dialHost,
+			Metadata:         map[string]string{"source": "migrated-route"},
 		})
 		usedNames[name] = struct{}{}
 		usedHosts[host] = struct{}{}

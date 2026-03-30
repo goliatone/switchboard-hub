@@ -116,8 +116,11 @@ routes:
 	if c.Apps[0].LocalPort != 3000 {
 		t.Fatalf("unexpected app local_port: %d", c.Apps[0].LocalPort)
 	}
-	if c.Apps[0].DialHost != "127.0.0.1" {
+	if c.Apps[0].DialHost != "" {
 		t.Fatalf("unexpected app dial_host: %q", c.Apps[0].DialHost)
+	}
+	if c.Apps[0].ResolvedDialHost != "127.0.0.1" {
+		t.Fatalf("unexpected app resolved_dial_host: %q", c.Apps[0].ResolvedDialHost)
 	}
 	if c.Tunnel.DefaultProvider != "cloudflare" {
 		t.Fatalf("unexpected default tunnel provider: %q", c.Tunnel.DefaultProvider)
@@ -187,6 +190,9 @@ func TestSaveLoad_RoundTripMixedLegacyAndNewSchema(t *testing.T) {
 	}
 	if got.Apps[0].DialHost != "::1" {
 		t.Fatalf("unexpected dial_host: %q", got.Apps[0].DialHost)
+	}
+	if got.Apps[0].ResolvedDialHost != "" {
+		t.Fatalf("unexpected resolved_dial_host: %q", got.Apps[0].ResolvedDialHost)
 	}
 	if got.Apps[0].PublicEndpoint.ActiveSessionPID != 4242 {
 		t.Fatalf("unexpected active_session_pid: %d", got.Apps[0].PublicEndpoint.ActiveSessionPID)

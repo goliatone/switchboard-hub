@@ -61,6 +61,11 @@ func upsertApp(c *config.Config, nameOrHost string, port int, opts *CreateAppOpt
 		DialHost:  normalizedDialHost,
 		Metadata:  map[string]string{},
 	}
+	if normalizedDialHost == "" {
+		if resolvedDialHost, ok := DetectReachableDialHost(port); ok {
+			app.ResolvedDialHost = resolvedDialHost
+		}
+	}
 	c.Apps = append(c.Apps, app)
 	sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
 	upsertLegacyRoute(c, host, port, ConfiguredDialHost(app))
@@ -85,6 +90,11 @@ func syncAppFromRoute(c *config.Config, host string, port int, dialHost string) 
 	if i := findAppByHost(c, host); i >= 0 {
 		c.Apps[i].LocalPort = port
 		c.Apps[i].DialHost = normalizedDialHost
+		if normalizedDialHost != "" {
+			c.Apps[i].ResolvedDialHost = ""
+		} else {
+			c.Apps[i].ResolvedDialHost = resolveRouteDialHost(normalizedDialHost, port)
+		}
 		sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
 		return nil
 	}
@@ -109,6 +119,10 @@ func syncAppFromRoute(c *config.Config, host string, port int, dialHost string) 
 			"source": "legacy-route",
 		},
 	})
+	last := len(c.Apps) - 1
+	if normalizedDialHost == "" {
+		c.Apps[last].ResolvedDialHost = resolveRouteDialHost(normalizedDialHost, port)
+	}
 	sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
 	return nil
 }
@@ -220,16 +234,13 @@ func upsertLegacyRoute(c *config.Config, host string, port int, dialHost string)
 	return true
 }
 
-func syncRoutesFromApps(c *config.Config, resolve bool) bool {
+func syncRoutesFromApps(c *config.Config) bool {
 	if c == nil {
 		return false
 	}
 	changed := false
 	for _, a := range c.Apps {
 		dialHost := ConfiguredDialHost(a)
-		if resolve {
-			dialHost = ResolveDialHost(a)
-		}
 		if upsertLegacyRoute(c, a.LocalHost, a.LocalPort, dialHost) {
 			changed = true
 		}
@@ -254,6 +265,16 @@ func createAppDialHost(opts *CreateAppOptions) string {
 		return ""
 	}
 	return opts.DialHost
+}
+
+func resolveRouteDialHost(explicitDialHost string, port int) string {
+	if explicitDialHost != "" {
+		return ""
+	}
+	if host, ok := DetectReachableDialHost(port); ok {
+		return host
+	}
+	return ""
 }
 
 func removeLegacyRouteByHost(c *config.Config, host string) {

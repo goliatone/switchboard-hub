@@ -217,7 +217,7 @@ func (s *Service) Apply() error {
 	if err != nil {
 		return err
 	}
-	if syncRoutesFromApps(c, true) {
+	if syncRoutesFromApps(c) {
 		if err := s.store.Save(p, c); err != nil {
 			return err
 		}
@@ -343,7 +343,10 @@ func (s *Service) AppUp(name string) error {
 		return err
 	}
 	a := c.Apps[idx]
-	upsertLegacyRoute(c, a.LocalHost, a.LocalPort, ResolveDialHost(a))
+	if refreshResolvedDialHost(&c.Apps[idx]) {
+		a = c.Apps[idx]
+	}
+	upsertLegacyRoute(c, a.LocalHost, a.LocalPort, ConfiguredDialHost(a))
 	if err := s.store.Save(p, c); err != nil {
 		return err
 	}
@@ -391,7 +394,7 @@ func (s *Service) EnsurePublicEndpoint(c *config.Config, name, providerName, pub
 	if err := initProviderWithConfig(pr, c, providerName, 20*time.Second); err != nil {
 		return config.App{}, err
 	}
-	localURL := LocalURLForApp(c.Apps[idx], true)
+	localURL := LocalURLForApp(c.Apps[idx], false)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	ep, err := pr.EnsureEndpoint(ctx, tunnel.EndpointRequest{
@@ -427,6 +430,9 @@ func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, e
 	a := c.Apps[idx]
 	if strings.TrimSpace(a.PublicEndpoint.Provider) == "" || strings.TrimSpace(a.PublicEndpoint.EndpointID) == "" {
 		return a, nil
+	}
+	if refreshResolvedDialHost(&c.Apps[idx]) {
+		a = c.Apps[idx]
 	}
 	pr, err := s.providerRegistry.Resolve(a.PublicEndpoint.Provider)
 	if err != nil {

@@ -43,20 +43,25 @@ func NormalizeDialHost(raw string) (string, error) {
 
 func ConfiguredDialHost(a config.App) string {
 	host := normalizeDialHost(a.DialHost)
-	if host == "" {
-		return defaultAppDialHost
+	if host != "" {
+		return host
 	}
-	return host
+	host = normalizeDialHost(a.ResolvedDialHost)
+	if host != "" {
+		return host
+	}
+	return defaultAppDialHost
 }
 
 func ResolveDialHost(a config.App) string {
 	if host := normalizeDialHost(a.DialHost); host != "" {
 		return host
 	}
-	for _, candidate := range []string{defaultAppDialHost, "::1"} {
-		if dialHostReachable(candidate, a.LocalPort) {
-			return candidate
-		}
+	if host, ok := DetectReachableDialHost(a.LocalPort); ok {
+		return host
+	}
+	if host := normalizeDialHost(a.ResolvedDialHost); host != "" {
+		return host
 	}
 	return defaultAppDialHost
 }
@@ -81,6 +86,38 @@ func normalizeDialHost(raw string) string {
 	s = strings.TrimPrefix(s, "[")
 	s = strings.TrimSuffix(s, "]")
 	return s
+}
+
+func DetectReachableDialHost(port int) (string, bool) {
+	for _, candidate := range []string{defaultAppDialHost, "::1"} {
+		if dialHostReachable(candidate, port) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func refreshResolvedDialHost(a *config.App) bool {
+	if a == nil {
+		return false
+	}
+	if normalizeDialHost(a.DialHost) != "" {
+		if a.ResolvedDialHost != "" {
+			a.ResolvedDialHost = ""
+			return true
+		}
+		return false
+	}
+	host, ok := DetectReachableDialHost(a.LocalPort)
+	if !ok {
+		return false
+	}
+	host = normalizeDialHost(host)
+	if normalizeDialHost(a.ResolvedDialHost) == host {
+		return false
+	}
+	a.ResolvedDialHost = host
+	return true
 }
 
 func dialHostReachable(host string, port int) bool {
