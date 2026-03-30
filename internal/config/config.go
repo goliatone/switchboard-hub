@@ -61,6 +61,7 @@ type App struct {
 	Name           string            `yaml:"name" json:"name"`
 	LocalHost      string            `yaml:"local_host" json:"local_host"`
 	LocalPort      int               `yaml:"local_port" json:"local_port"`
+	DialHost       string            `yaml:"dial_host,omitempty" json:"dial_host,omitempty"`
 	PublicEndpoint AppPublicEndpoint `yaml:"public_endpoint,omitempty" json:"public_endpoint,omitempty"`
 	OAuth          AppOAuth          `yaml:"oauth,omitempty" json:"oauth,omitempty"`
 	Metadata       map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
@@ -261,6 +262,7 @@ func normalizeApps(apps []App) []App {
 			Name:      normalizeAppName(a.Name),
 			LocalHost: normalizeHost(a.LocalHost),
 			LocalPort: a.LocalPort,
+			DialHost:  normalizeDialHost(a.DialHost),
 			PublicEndpoint: AppPublicEndpoint{
 				Provider:             strings.ToLower(strings.TrimSpace(a.PublicEndpoint.Provider)),
 				Host:                 normalizeHost(a.PublicEndpoint.Host),
@@ -311,11 +313,18 @@ func migrateRoutesToApps(c *Config) {
 		if host == "" {
 			continue
 		}
-		if _, exists := usedHosts[host]; exists {
+		dialHost, port, ok := parseDialTarget(r.Dial)
+		if !ok {
 			continue
 		}
-		port, ok := parseDialPort(r.Dial)
-		if !ok {
+		if _, exists := usedHosts[host]; exists {
+			for i := range c.Apps {
+				if normalizeHost(c.Apps[i].LocalHost) != host || c.Apps[i].LocalPort != port || strings.TrimSpace(c.Apps[i].DialHost) != "" {
+					continue
+				}
+				c.Apps[i].DialHost = dialHost
+				break
+			}
 			continue
 		}
 		name := deriveAppName(host, c.TLD)
@@ -333,6 +342,7 @@ func migrateRoutesToApps(c *Config) {
 			Name:      name,
 			LocalHost: host,
 			LocalPort: port,
+			DialHost:  dialHost,
 			Metadata:  map[string]string{"source": "migrated-route"},
 		})
 		usedNames[name] = struct{}{}
@@ -342,16 +352,21 @@ func migrateRoutesToApps(c *Config) {
 	sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
 }
 
-func parseDialPort(dial string) (int, bool) {
-	_, port, err := net.SplitHostPort(strings.TrimSpace(dial))
+func parseDialTarget(dial string) (string, int, bool) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(dial))
 	if err != nil {
-		return 0, false
+		return "", 0, false
 	}
 	p, err := strconv.Atoi(port)
 	if err != nil || p <= 0 || p > 65535 {
-		return 0, false
+		return "", 0, false
 	}
-	return p, true
+	return normalizeDialHost(host), p, true
+}
+
+func parseDialPort(dial string) (int, bool) {
+	_, port, ok := parseDialTarget(dial)
+	return port, ok
 }
 
 func deriveAppName(host, tld string) string {
@@ -381,5 +396,12 @@ func normalizeHost(host string) string {
 	h = strings.TrimPrefix(h, "http://")
 	h = strings.TrimPrefix(h, "https://")
 	h = strings.TrimSuffix(h, "/")
+	return h
+}
+
+func normalizeDialHost(host string) string {
+	h := normalizeHost(host)
+	h = strings.TrimPrefix(h, "[")
+	h = strings.TrimSuffix(h, "]")
 	return h
 }
