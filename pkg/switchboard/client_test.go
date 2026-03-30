@@ -98,7 +98,7 @@ func TestClientUsesExplicitConfigPathAndProviderInjection(t *testing.T) {
 		t.Fatalf("SaveConfig returned error: %v", err)
 	}
 
-	if err := client.CreateApp("demo", 3000, ""); err != nil {
+	if err := client.CreateApp("demo", 3000, nil); err != nil {
 		t.Fatalf("CreateApp returned error: %v", err)
 	}
 	if err := client.ExposeApp("demo", "mock", "demo.example.com"); err != nil {

@@ -63,6 +63,10 @@ type App struct {
 	Metadata       map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
+type CreateAppOptions struct {
+	DialHost string `json:"dial_host,omitempty" yaml:"dial_host,omitempty"`
+}
+
 type AppTunnelHealth struct {
 	AppName      string `json:"app_name"`
 	Provider     string `json:"provider"`
