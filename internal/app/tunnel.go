@@ -347,14 +347,22 @@ type AppTunnelHealth struct {
 }
 
 func AppTunnelHealthStatus() ([]AppTunnelHealth, error) {
-	_, c, err := loadConfigWithPath()
+	return DefaultService().AppTunnelHealthStatus()
+}
+
+func (s *Service) AppTunnelHealthStatus() ([]AppTunnelHealth, error) {
+	_, c, err := s.LoadOrCreateDefaultConfig()
 	if err != nil {
 		return nil, err
 	}
-	return appTunnelHealthStatusFromConfig(c)
+	return s.appTunnelHealthStatusFromConfig(c)
 }
 
 func appTunnelHealthStatusFromConfig(c *config.Config) ([]AppTunnelHealth, error) {
+	return DefaultService().appTunnelHealthStatusFromConfig(c)
+}
+
+func (s *Service) appTunnelHealthStatusFromConfig(c *config.Config) ([]AppTunnelHealth, error) {
 	if c == nil {
 		return nil, fmt.Errorf("config is nil")
 	}
@@ -375,7 +383,7 @@ func appTunnelHealthStatusFromConfig(c *config.Config) ([]AppTunnelHealth, error
 			continue
 		}
 
-		pr, err := providerRegistryFactory().Resolve(h.Provider)
+		pr, err := s.providerRegistry.Resolve(h.Provider)
 		if err != nil {
 			h.Err = actionableProviderResolveError(h.Provider, err).Error()
 			out = append(out, h)
