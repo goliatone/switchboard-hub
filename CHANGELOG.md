@@ -1,5 +1,44 @@
 # Changelog
 
+# [0.6.0](https://github.com/goliatone/switchboard-hub/compare/v0.5.0...v0.6.0) - (2026-03-30)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- Do not hardcode serviing iface, handle dial ([3aface9](https://github.com/goliatone/switchboard-hub/commit/3aface94a723dde870e06763ce08355c90b3f398))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.6.0 ([f90c469](https://github.com/goliatone/switchboard-hub/commit/f90c4691d59e844eb6a939f42fc45019dd95f93a))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Plain output cleanup ([9339d13](https://github.com/goliatone/switchboard-hub/commit/9339d133e62b2463b559e7e19bd2be2b02a84ba3))  - (goliatone)
+- Support tui formatting ([fc0d8c4](https://github.com/goliatone/switchboard-hub/commit/fc0d8c41c2a4198b1ee501bbc0f58d4b7a14d6f7))  - (goliatone)
+- TUI support for commands ([32bb211](https://github.com/goliatone/switchboard-hub/commit/32bb211c54e8ae2f8f540399715f840fa2d1369c))  - (goliatone)
+- Support config prompt, styles, and tui ([63d8c36](https://github.com/goliatone/switchboard-hub/commit/63d8c36911aca41fa1dae9b266354dcad6688ae1))  - (goliatone)
+- App health info ([6a7f6cd](https://github.com/goliatone/switchboard-hub/commit/6a7f6cd3cc8ee5547dd791c246898c6a360bd7d6))  - (goliatone)
+- App tunnel health status info ([7d3a3bd](https://github.com/goliatone/switchboard-hub/commit/7d3a3bde9a36a88bf2ee3fd1f4aa6679fcc8301a))  - (goliatone)
+- Service log handle NDJSON and streams ([cd6f3de](https://github.com/goliatone/switchboard-hub/commit/cd6f3de9eb0a7b6bc694312580e2876100b7d25c))  - (goliatone)
+- Dial host manager ([9b9e353](https://github.com/goliatone/switchboard-hub/commit/9b9e35399e10c0d25db1c64c3fea3ab41bff8b5e))  - (goliatone)
+- Render status report ([2d425f3](https://github.com/goliatone/switchboard-hub/commit/2d425f3816a4f9a0fae6e601e9bc48067817ba01))  - (goliatone)
+- App status manager ([64e5704](https://github.com/goliatone/switchboard-hub/commit/64e5704f1eae75030b73a510058f26792bb34d86))  - (goliatone)
+- Handle custom dial for apps ([26a61f9](https://github.com/goliatone/switchboard-hub/commit/26a61f978c9e6e0274b1cc8f8dd348668be2d705))  - (goliatone)
+
+## <!-- 2 -->🚜 Refactor
+
+- Rendering flow for commands ([b9a7e71](https://github.com/goliatone/switchboard-hub/commit/b9a7e71b3c13a79b2d0d0c3f2a629ccb4032ba4a))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.5.0 ([450768f](https://github.com/goliatone/switchboard-hub/commit/450768f33fc282e181f292ce01802ef94a9756e2))  - (goliatone)
+
+## <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Fix code ([9bf38fb](https://github.com/goliatone/switchboard-hub/commit/9bf38fb4944ba0961be76413f3a5034f321854ce))  - (goliatone)
+- Update readme ([735f366](https://github.com/goliatone/switchboard-hub/commit/735f366872f4adba9cfdfcfe16aac0eb7af09947))  - (goliatone)
+- Update deps ([707cb06](https://github.com/goliatone/switchboard-hub/commit/707cb06923e702dad05bebe2938da20af5f8c95b))  - (goliatone)
+- Update tests ([70a542d](https://github.com/goliatone/switchboard-hub/commit/70a542df72367ca8f3236a65ec0fa7959e932216))  - (goliatone)
+
 # [0.5.0](https://github.com/goliatone/switchboard-hub/compare/v0.4.0...v0.5.0) - (2026-03-28)
 
 ## <!-- 1 -->🐛 Bug Fixes
