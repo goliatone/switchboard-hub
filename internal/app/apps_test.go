@@ -8,7 +8,7 @@ import (
 
 func TestUpsertAppWritesLegacyRoute(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	got, err := upsertApp(c, "esign", 3000, "")
+	got, err := upsertApp(c, "esign", 3000, nil)
 	if err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
@@ -32,20 +32,20 @@ func TestUpsertAppWritesLegacyRoute(t *testing.T) {
 
 func TestUpsertAppRejectsDuplicateName(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	if _, err := upsertApp(c, "esign", 3000, ""); err != nil {
+	if _, err := upsertApp(c, "esign", 3000, nil); err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
-	if _, err := upsertApp(c, "esign", 3001, ""); err == nil {
+	if _, err := upsertApp(c, "esign", 3001, nil); err == nil {
 		t.Fatal("expected duplicate app name error")
 	}
 }
 
 func TestUpsertAppRejectsDuplicateHost(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	if _, err := upsertApp(c, "esign.test", 3000, ""); err != nil {
+	if _, err := upsertApp(c, "esign.test", 3000, nil); err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
-	if _, err := upsertApp(c, "esign.test", 3001, ""); err == nil {
+	if _, err := upsertApp(c, "esign.test", 3001, nil); err == nil {
 		t.Fatal("expected duplicate app host error")
 	}
 }
@@ -74,7 +74,7 @@ func TestNormalizeAppNameInput(t *testing.T) {
 
 func TestSyncAppFromRouteUpdatesExistingHost(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	if _, err := upsertApp(c, "esign", 3000, ""); err != nil {
+	if _, err := upsertApp(c, "esign", 3000, nil); err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
 	if err := syncAppFromRoute(c, "esign.test", 4000, "::1"); err != nil {
@@ -93,7 +93,7 @@ func TestSyncAppFromRouteUpdatesExistingHost(t *testing.T) {
 
 func TestRemoveAppByHost(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	if _, err := upsertApp(c, "esign", 3000, ""); err != nil {
+	if _, err := upsertApp(c, "esign", 3000, nil); err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}
 	removeAppByHost(c, "esign.test")
@@ -104,7 +104,7 @@ func TestRemoveAppByHost(t *testing.T) {
 
 func TestUpsertAppStoresExplicitDialHost(t *testing.T) {
 	c := config.Default("test", "10.0.0.1")
-	got, err := upsertApp(c, "esign", 3000, "::1")
+	got, err := upsertApp(c, "esign", 3000, &CreateAppOptions{DialHost: "::1"})
 	if err != nil {
 		t.Fatalf("upsertApp returned error: %v", err)
 	}

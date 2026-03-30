@@ -161,12 +161,13 @@ type backgroundDaemon struct {
 }
 
 type ServiceLogOptions struct {
-	Lines  int
-	Follow bool
-	Stream string
-	JSON   bool
-	Stdout io.Writer
-	Stderr io.Writer
+	Lines     int
+	Follow    bool
+	Stream    string
+	JSON      bool
+	EventSink func(ServiceLogEvent)
+	Stdout    io.Writer
+	Stderr    io.Writer
 }
 
 type serviceLogStream struct {
@@ -174,15 +175,18 @@ type serviceLogStream struct {
 	path    string
 	writer  io.Writer
 	json    bool
+	sink    func(ServiceLogEvent)
 	stat    os.FileInfo
 	offset  int64
 	partial string
 }
 
-type serviceLogEvent struct {
+type ServiceLogEvent struct {
 	Stream string `json:"stream"`
 	Line   string `json:"line"`
 }
+
+type serviceLogEvent = ServiceLogEvent
 
 func launchdServiceTarget() string {
 	return launchdServiceDomain + "/" + launchdServiceLabel
@@ -191,6 +195,10 @@ func launchdServiceTarget() string {
 func ServiceLog(opts ServiceLogOptions) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	return serviceLogWithContext(ctx, opts)
+}
+
+func ServiceLogWithContext(ctx context.Context, opts ServiceLogOptions) error {
 	return serviceLogWithContext(ctx, opts)
 }
 
@@ -266,13 +274,13 @@ func newServiceLogStreams(opts ServiceLogOptions) ([]*serviceLogStream, bool, er
 	switch mode {
 	case "all":
 		streams = append(streams,
-			&serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter, json: opts.JSON},
-			&serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter, json: opts.JSON},
+			&serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter, json: opts.JSON, sink: opts.EventSink},
+			&serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter, json: opts.JSON, sink: opts.EventSink},
 		)
 	case "stdout":
-		streams = append(streams, &serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter, json: opts.JSON})
+		streams = append(streams, &serviceLogStream{name: "stdout", path: serviceStdoutPath, writer: stdoutWriter, json: opts.JSON, sink: opts.EventSink})
 	case "stderr":
-		streams = append(streams, &serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter, json: opts.JSON})
+		streams = append(streams, &serviceLogStream{name: "stderr", path: serviceStderrPath, writer: stderrWriter, json: opts.JSON, sink: opts.EventSink})
 	default:
 		return nil, false, fmt.Errorf("unsupported stream %q", opts.Stream)
 	}
@@ -376,14 +384,21 @@ func (s *serviceLogStream) consume(chunk []byte, prefix bool) error {
 }
 
 func (s *serviceLogStream) writeLine(line string, prefix bool) error {
-	if s == nil || s.writer == nil {
+	if s == nil {
+		return nil
+	}
+	event := ServiceLogEvent{
+		Stream: s.name,
+		Line:   line,
+	}
+	if s.sink != nil {
+		s.sink(event)
+	}
+	if s.writer == nil {
 		return nil
 	}
 	if s.json {
-		return json.NewEncoder(s.writer).Encode(serviceLogEvent{
-			Stream: s.name,
-			Line:   line,
-		})
+		return json.NewEncoder(s.writer).Encode(event)
 	}
 	if prefix {
 		if line == "" {
@@ -815,6 +830,67 @@ func PrepareServiceEnvironment() (ServiceEnvironmentReport, error) {
 	return report, nil
 }
 
+func SaveServiceEnvValues(path string, updates map[string]string) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+	case os.IsNotExist(err):
+		data = nil
+	default:
+		return err
+	}
+
+	lines := []string{}
+	if len(data) > 0 {
+		lines = strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	}
+	seen := map[string]bool{}
+	for i, line := range lines {
+		key, ok := serviceEnvLineKey(line)
+		if !ok {
+			continue
+		}
+		value, ok := updates[key]
+		if !ok {
+			continue
+		}
+		lines[i] = key + "=" + strconv.Quote(value)
+		seen[key] = true
+	}
+
+	keys := make([]string, 0, len(updates))
+	for key := range updates {
+		key = strings.TrimSpace(key)
+		if key == "" || seen[key] {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(lines) == 0 {
+		lines = append(lines, "# switchd launchd environment")
+	}
+	for _, key := range keys {
+		lines = append(lines, key+"="+strconv.Quote(updates[key]))
+	}
+
+	content := strings.Join(lines, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return err
+	}
+	fixSudoOwnership(path)
+	return nil
+}
+
 func startPreparedService() (LaunchdServiceStatus, error) {
 	if err := unloadInstalledServiceDefinition(); err != nil {
 		return LaunchdServiceStatus{}, err
@@ -999,6 +1075,23 @@ func loadServiceEnvFile(path string) (map[string]string, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func serviceEnvLineKey(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", false
+	}
+	line = strings.TrimPrefix(line, "export ")
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	key := strings.TrimSpace(parts[0])
+	if key == "" {
+		return "", false
+	}
+	return key, true
 }
 
 func ensureServiceEnvTemplate(report *ServiceEnvironmentReport) error {

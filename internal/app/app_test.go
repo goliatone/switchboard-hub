@@ -164,3 +164,28 @@ func TestStatusReportInfoSetsCaddyStartHintWhenUnavailable(t *testing.T) {
 		t.Fatalf("expected start hint in caddy status: %#v", report.Caddy)
 	}
 }
+
+func TestAddRouteWithoutDialHostPreservesAutoAppDialHost(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("SWITCHD_CONFIG_PATH", cfgPath)
+
+	cfg := config.Default("test", "10.0.0.1")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save returned error: %v", err)
+	}
+
+	if err := AddRoute("demo", 3000, ""); err != nil {
+		t.Fatalf("AddRoute returned error: %v", err)
+	}
+
+	got, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load returned error: %v", err)
+	}
+	if len(got.Apps) != 1 {
+		t.Fatalf("expected 1 app, got %d", len(got.Apps))
+	}
+	if got.Apps[0].DialHost != "" {
+		t.Fatalf("expected auto dial host, got %q", got.Apps[0].DialHost)
+	}
+}

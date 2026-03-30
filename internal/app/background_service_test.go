@@ -555,6 +555,38 @@ func TestPrepareServiceEnvironmentAppendsMissingVars(t *testing.T) {
 	}
 }
 
+func TestSaveServiceEnvValuesUpdatesExistingAndAppendsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.env")
+	if err := os.WriteFile(path, []byte("# comment\nCF_SERVICE_TOKEN=\nEXISTING=value\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	if err := SaveServiceEnvValues(path, map[string]string{
+		"CF_SERVICE_TOKEN": "secret-token",
+		"NEW_TOKEN":        "another",
+	}); err != nil {
+		t.Fatalf("SaveServiceEnvValues returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "# comment\n") {
+		t.Fatalf("expected comments to be preserved, got %q", got)
+	}
+	if !strings.Contains(got, "CF_SERVICE_TOKEN=\"secret-token\"\n") {
+		t.Fatalf("expected updated token value, got %q", got)
+	}
+	if !strings.Contains(got, "EXISTING=value\n") {
+		t.Fatalf("expected existing value preserved, got %q", got)
+	}
+	if !strings.Contains(got, "NEW_TOKEN=\"another\"\n") {
+		t.Fatalf("expected appended value, got %q", got)
+	}
+}
+
 func TestEnsureAppRuntimeKeepsAlivePersistedPID(t *testing.T) {
 	provider := &backgroundTestProvider{statusReady: false, startPID: 5151}
 	reg := tunnel.NewRegistry()

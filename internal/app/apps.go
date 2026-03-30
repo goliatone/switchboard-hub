@@ -11,8 +11,12 @@ import (
 	"github.com/goliatone/switchboard-hub/internal/config"
 )
 
-func CreateApp(nameOrHost string, port int, dialHost string) error {
-	return DefaultService().CreateApp(nameOrHost, port, dialHost)
+type CreateAppOptions struct {
+	DialHost string
+}
+
+func CreateApp(nameOrHost string, port int, opts *CreateAppOptions) error {
+	return DefaultService().CreateApp(nameOrHost, port, opts)
 }
 
 func RemoveApp(name string) error {
@@ -23,7 +27,7 @@ func ListApps() ([]config.App, error) {
 	return DefaultService().ListApps()
 }
 
-func upsertApp(c *config.Config, nameOrHost string, port int, dialHost string) (config.App, error) {
+func upsertApp(c *config.Config, nameOrHost string, port int, opts *CreateAppOptions) (config.App, error) {
 	if c == nil {
 		return config.App{}, errors.New("config is nil")
 	}
@@ -38,7 +42,7 @@ func upsertApp(c *config.Config, nameOrHost string, port int, dialHost string) (
 	if err != nil {
 		return config.App{}, err
 	}
-	normalizedDialHost, err := NormalizeDialHost(dialHost)
+	normalizedDialHost, err := NormalizeDialHost(createAppDialHost(opts))
 	if err != nil {
 		return config.App{}, err
 	}
@@ -243,6 +247,13 @@ func dialHostFromRouteDial(dial string) string {
 		return ""
 	}
 	return host
+}
+
+func createAppDialHost(opts *CreateAppOptions) string {
+	if opts == nil {
+		return ""
+	}
+	return opts.DialHost
 }
 
 func removeLegacyRouteByHost(c *config.Config, host string) {

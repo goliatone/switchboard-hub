@@ -226,10 +226,11 @@ func AddRoute(nameOrHost string, port int, dialHost string) error {
 	if err != nil {
 		return err
 	}
-	if normalizedDialHost == "" {
-		normalizedDialHost = defaultAppDialHost
+	effectiveDialHost := normalizedDialHost
+	if effectiveDialHost == "" {
+		effectiveDialHost = ResolveDialHost(config.App{LocalPort: port})
 	}
-	dial := DialAddress(normalizedDialHost, port)
+	dial := DialAddress(effectiveDialHost, port)
 
 	found := false
 	for i := range c.Routes {

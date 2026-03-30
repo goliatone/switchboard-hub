@@ -318,13 +318,6 @@ func migrateRoutesToApps(c *Config) {
 			continue
 		}
 		if _, exists := usedHosts[host]; exists {
-			for i := range c.Apps {
-				if normalizeHost(c.Apps[i].LocalHost) != host || c.Apps[i].LocalPort != port || strings.TrimSpace(c.Apps[i].DialHost) != "" {
-					continue
-				}
-				c.Apps[i].DialHost = dialHost
-				break
-			}
 			continue
 		}
 		name := deriveAppName(host, c.TLD)

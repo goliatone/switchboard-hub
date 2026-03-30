@@ -114,7 +114,7 @@ func TestIntegration_AppExposeOAuthUpDownWithMockProvider(t *testing.T) {
 	cfgPath, caddyServer := setupIntegrationConfig(t)
 	defer caddyServer.Close()
 
-	if err := CreateApp("esign", 3000, ""); err != nil {
+	if err := CreateApp("esign", 3000, nil); err != nil {
 		t.Fatalf("CreateApp returned error: %v", err)
 	}
 	if err := ExposeApp("esign", "mock", "esign-oauth.dev.example.com"); err != nil {

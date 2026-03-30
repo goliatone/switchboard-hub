@@ -171,12 +171,12 @@ func (s *Service) TunnelProviders() []string {
 	return s.providerRegistry.Providers()
 }
 
-func (s *Service) CreateApp(nameOrHost string, port int, dialHost string) error {
+func (s *Service) CreateApp(nameOrHost string, port int, opts *CreateAppOptions) error {
 	p, c, err := s.LoadOrCreateDefaultConfig()
 	if err != nil {
 		return err
 	}
-	if _, err := upsertApp(c, nameOrHost, port, dialHost); err != nil {
+	if _, err := upsertApp(c, nameOrHost, port, opts); err != nil {
 		return err
 	}
 	return s.store.Save(p, c)
