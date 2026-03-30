@@ -3,7 +3,6 @@ package stack
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/goliatone/switchboard-hub/internal/app"
@@ -121,7 +120,11 @@ func Up(service *app.Service, path string) (*Report, error) {
 		if removeRouteIfUnused(cfg, update.PreviousHost) {
 			appOrRouteChanged = true
 		}
-		if ensureRoute(cfg, svc.LocalHost, svc.LocalPort) {
+		appIndex, _, err := managedAppForService(cfg, resolved.Stack.Name, svc.Name)
+		if err != nil {
+			return nil, err
+		}
+		if appIndex >= 0 && ensureRoute(cfg, cfg.Apps[appIndex], svc.LocalHost, svc.LocalPort) {
 			appOrRouteChanged = true
 		}
 	}
@@ -283,7 +286,7 @@ func inspectService(resolved *ResolvedStack, cfg *config.Config, svc ResolvedSer
 
 	status.Drift = append(status.Drift, "missing_app")
 	status.Actions = append(status.Actions, Action{Type: "create_app", Service: svc.Name, Description: fmt.Sprintf("create app %s", svc.GeneratedAppName)})
-	status.Actions = append(status.Actions, Action{Type: "ensure_route", Service: svc.Name, Description: fmt.Sprintf("ensure route %s -> 127.0.0.1:%d", svc.LocalHost, svc.LocalPort)})
+	status.Actions = append(status.Actions, Action{Type: "ensure_route", Service: svc.Name, Description: fmt.Sprintf("ensure route %s -> auto:%d", svc.LocalHost, svc.LocalPort)})
 	if svc.Expose {
 		status.Actions = append(status.Actions, Action{Type: "expose_endpoint", Service: svc.Name, Description: "expose public endpoint"})
 	}
@@ -315,9 +318,9 @@ func addManagedDrift(status *ServiceStatus, cfg *config.Config, svc ResolvedServ
 		status.Drift = append(status.Drift, "local_port")
 		status.Actions = append(status.Actions, Action{Type: "update_app_port", Service: svc.Name, Description: fmt.Sprintf("set local port to %d", svc.LocalPort)})
 	}
-	if !routeMatches(cfg, svc.LocalHost, svc.LocalPort) {
+	if !routeMatches(cfg, actual, svc.LocalHost, svc.LocalPort) {
 		status.Drift = append(status.Drift, "route")
-		status.Actions = append(status.Actions, Action{Type: "ensure_route", Service: svc.Name, Description: fmt.Sprintf("ensure route %s -> 127.0.0.1:%d", svc.LocalHost, svc.LocalPort)})
+		status.Actions = append(status.Actions, Action{Type: "ensure_route", Service: svc.Name, Description: fmt.Sprintf("ensure route %s -> auto:%d", svc.LocalHost, svc.LocalPort)})
 	}
 	if svc.Expose {
 		if status.Provider == "" {
@@ -408,8 +411,8 @@ func desiredProvider(cfg *config.Config, svc ResolvedService) string {
 	return strings.TrimSpace(cfg.Tunnel.DefaultProvider)
 }
 
-func routeMatches(cfg *config.Config, host string, port int) bool {
-	dial := "127.0.0.1:" + strconv.Itoa(port)
+func routeMatches(cfg *config.Config, actual config.App, host string, port int) bool {
+	dial := app.DialAddress(app.ResolveDialHost(actual), port)
 	for _, route := range cfg.Routes {
 		if strings.EqualFold(route.Host, host) {
 			return route.Dial == dial
@@ -418,8 +421,8 @@ func routeMatches(cfg *config.Config, host string, port int) bool {
 	return false
 }
 
-func ensureRoute(cfg *config.Config, host string, port int) bool {
-	dial := "127.0.0.1:" + strconv.Itoa(port)
+func ensureRoute(cfg *config.Config, actual config.App, host string, port int) bool {
+	dial := app.DialAddress(app.ResolveDialHost(actual), port)
 	for i := range cfg.Routes {
 		if strings.EqualFold(cfg.Routes[i].Host, host) {
 			if cfg.Routes[i].Dial == dial {
