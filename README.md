@@ -86,23 +86,22 @@ go build -o switchd ./cmd/switchd
 
 Published releases install `switchd` as the canonical command.
 
-Packaged installs also provide `sbd` as a short alias to the same binary:
-
-```bash
-switchd version
-sbd version
-```
-
 Homebrew release installs come from the `goliatone/homebrew-tap` tap:
 
 ```bash
 brew tap goliatone/homebrew-tap
 brew install --cask switchd
+switchd version
 ```
 
 Homebrew installs provide the canonical `switchd` command only.
 
-Linux release packages (`deb` and `rpm`) install `switchd` and add the `sbd` symlink automatically.
+Linux release packages (`deb` and `rpm`) install `switchd` and add the `sbd` symlink automatically:
+
+```bash
+switchd version
+sbd version
+```
 
 ## First time setup (machine)
 
