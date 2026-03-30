@@ -3,16 +3,16 @@ package app
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/goliatone/switchboard-hub/internal/config"
 )
 
-func CreateApp(nameOrHost string, port int) error {
-	return DefaultService().CreateApp(nameOrHost, port)
+func CreateApp(nameOrHost string, port int, dialHost string) error {
+	return DefaultService().CreateApp(nameOrHost, port, dialHost)
 }
 
 func RemoveApp(name string) error {
@@ -23,7 +23,7 @@ func ListApps() ([]config.App, error) {
 	return DefaultService().ListApps()
 }
 
-func upsertApp(c *config.Config, nameOrHost string, port int) (config.App, error) {
+func upsertApp(c *config.Config, nameOrHost string, port int, dialHost string) (config.App, error) {
 	if c == nil {
 		return config.App{}, errors.New("config is nil")
 	}
@@ -35,6 +35,10 @@ func upsertApp(c *config.Config, nameOrHost string, port int) (config.App, error
 		return config.App{}, err
 	}
 	name, err := normalizeAppNameFromInput(nameOrHost, host, c.TLD)
+	if err != nil {
+		return config.App{}, err
+	}
+	normalizedDialHost, err := NormalizeDialHost(dialHost)
 	if err != nil {
 		return config.App{}, err
 	}
@@ -50,15 +54,16 @@ func upsertApp(c *config.Config, nameOrHost string, port int) (config.App, error
 		Name:      name,
 		LocalHost: host,
 		LocalPort: port,
+		DialHost:  normalizedDialHost,
 		Metadata:  map[string]string{},
 	}
 	c.Apps = append(c.Apps, app)
 	sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
-	upsertLegacyRoute(c, host, port)
+	upsertLegacyRoute(c, host, port, ConfiguredDialHost(app))
 	return app, nil
 }
 
-func syncAppFromRoute(c *config.Config, host string, port int) error {
+func syncAppFromRoute(c *config.Config, host string, port int, dialHost string) error {
 	if c == nil {
 		return errors.New("config is nil")
 	}
@@ -69,8 +74,13 @@ func syncAppFromRoute(c *config.Config, host string, port int) error {
 	if err := validateAppPort(port); err != nil {
 		return err
 	}
+	normalizedDialHost, err := NormalizeDialHost(dialHost)
+	if err != nil {
+		return err
+	}
 	if i := findAppByHost(c, host); i >= 0 {
 		c.Apps[i].LocalPort = port
+		c.Apps[i].DialHost = normalizedDialHost
 		sort.Slice(c.Apps, func(i, j int) bool { return c.Apps[i].Name < c.Apps[j].Name })
 		return nil
 	}
@@ -90,6 +100,7 @@ func syncAppFromRoute(c *config.Config, host string, port int) error {
 		Name:      name,
 		LocalHost: host,
 		LocalPort: port,
+		DialHost:  normalizedDialHost,
 		Metadata: map[string]string{
 			"source": "legacy-route",
 		},
@@ -185,20 +196,53 @@ func normalizeAppHost(nameOrHost, tld string) (string, error) {
 	return host, nil
 }
 
-func upsertLegacyRoute(c *config.Config, host string, port int) {
+func upsertLegacyRoute(c *config.Config, host string, port int, dialHost string) bool {
 	if c == nil {
-		return
+		return false
 	}
-	dial := "127.0.0.1:" + strconv.Itoa(port)
+	dial := DialAddress(dialHost, port)
 	for i := range c.Routes {
 		if strings.EqualFold(c.Routes[i].Host, host) {
+			if c.Routes[i].Dial == dial {
+				return false
+			}
 			c.Routes[i].Dial = dial
 			sort.Slice(c.Routes, func(i, j int) bool { return c.Routes[i].Host < c.Routes[j].Host })
-			return
+			return true
 		}
 	}
 	c.Routes = append(c.Routes, config.Route{Host: host, Dial: dial})
 	sort.Slice(c.Routes, func(i, j int) bool { return c.Routes[i].Host < c.Routes[j].Host })
+	return true
+}
+
+func syncRoutesFromApps(c *config.Config, resolve bool) bool {
+	if c == nil {
+		return false
+	}
+	changed := false
+	for _, a := range c.Apps {
+		dialHost := ConfiguredDialHost(a)
+		if resolve {
+			dialHost = ResolveDialHost(a)
+		}
+		if upsertLegacyRoute(c, a.LocalHost, a.LocalPort, dialHost) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+func dialHostFromRouteDial(dial string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(dial))
+	if err != nil {
+		return ""
+	}
+	host, err = NormalizeDialHost(host)
+	if err != nil {
+		return ""
+	}
+	return host
 }
 
 func removeLegacyRouteByHost(c *config.Config, host string) {
