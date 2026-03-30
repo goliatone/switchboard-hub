@@ -97,8 +97,10 @@ Homebrew release installs come from the `goliatone/homebrew-tap` tap:
 
 ```bash
 brew tap goliatone/homebrew-tap
-brew install switchd
+brew install --cask switchd
 ```
+
+Homebrew installs provide the canonical `switchd` command only.
 
 Linux release packages (`deb` and `rpm`) install `switchd` and add the `sbd` symlink automatically.
 
