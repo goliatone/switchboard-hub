@@ -26,10 +26,12 @@ var (
 	gitTag    = ""
 
 	serviceLogRun        = app.ServiceLog
+	serviceStatusInfoRun = app.ServiceStatusInfo
 	statusReportInfo     = app.StatusReportInfo
 	prepareServiceEnvRun = app.PrepareServiceEnvironment
 	appListTUIRun        = runAppListTUI
 	stackReportTUIRun    = runStackReportTUI
+	serviceStatusTUIRun  = runServiceStatusTUI
 )
 
 const defaultCommandName = "switchd"
@@ -478,7 +480,7 @@ func (c *TunnelInitCmd) Run(r *runContext) error {
 	if _, ok := fields["provider"]; !ok && strings.TrimSpace(c.Provider) != "" {
 		fields["provider"] = strings.TrimSpace(c.Provider)
 	}
-	if report, err := maybeCollectMissingServiceEnv(r); err == nil {
+	if report, err := maybeCollectMissingServiceEnv(r, !c.NonInteractive); err == nil {
 		if strings.TrimSpace(report.EnvFilePath) != "" {
 			fields["env_file"] = report.EnvFilePath
 		}
@@ -719,7 +721,7 @@ func (c *CaddyRunCmd) Run(_ *runContext) error {
 type ServiceInstallCmd struct{}
 
 func (c *ServiceInstallCmd) Run(r *runContext) error {
-	if _, err := maybeCollectMissingServiceEnv(r); err != nil {
+	if _, err := maybeCollectMissingServiceEnv(r, true); err != nil {
 		return err
 	}
 	report, err := app.ServiceInstallWithReport()
@@ -734,7 +736,7 @@ func (c *ServiceInstallCmd) Run(r *runContext) error {
 type ServiceStartCmd struct{}
 
 func (c *ServiceStartCmd) Run(r *runContext) error {
-	if _, err := maybeCollectMissingServiceEnv(r); err != nil {
+	if _, err := maybeCollectMissingServiceEnv(r, true); err != nil {
 		return err
 	}
 	report, err := app.ServiceStartWithReport()
@@ -759,7 +761,7 @@ func (c *ServiceStopCmd) Run(r *runContext) error {
 type ServiceStatusCmd struct{}
 
 func (c *ServiceStatusCmd) Run(r *runContext) error {
-	st, err := app.ServiceStatusInfo()
+	st, err := serviceStatusInfoRun()
 	if err != nil {
 		return err
 	}
@@ -767,47 +769,12 @@ func (c *ServiceStatusCmd) Run(r *runContext) error {
 		r.out.jsonOut(os.Stdout, st)
 		return nil
 	}
-	fmt.Printf("label:       %s\n", st.Label)
-	fmt.Printf("installed:   %s\n", boolLabel(st.Installed))
-	fmt.Printf("running:     %s\n", boolLabel(st.Running))
-	fmt.Printf("ready:       %s\n", boolLabel(st.Ready))
-	if st.Stale {
-		fmt.Printf("stale:       %s\n", boolLabel(true))
+	if useTUI, err := r.wantsTUIForServiceStatus(); err != nil {
+		return err
+	} else if useTUI {
+		return serviceStatusTUIRun(st, r.out.styles())
 	}
-	if st.Phase != "" {
-		fmt.Printf("phase:       %s\n", st.Phase)
-	}
-	if st.PID > 0 {
-		fmt.Printf("pid:         %d\n", st.PID)
-	}
-	if st.CaddyPID > 0 {
-		fmt.Printf("caddy pid:   %d\n", st.CaddyPID)
-	}
-	if st.StartedAt != "" {
-		fmt.Printf("started at:  %s\n", st.StartedAt)
-	}
-	if st.ConfigPath != "" {
-		fmt.Printf("config path: %s\n", st.ConfigPath)
-	}
-	if st.EnvFilePath != "" {
-		fmt.Printf("env file:    %s\n", st.EnvFilePath)
-	}
-	if len(st.RequiredEnvVars) > 0 {
-		fmt.Printf("required env: %s\n", strings.Join(st.RequiredEnvVars, ", "))
-	}
-	if len(st.ConfiguredEnvVars) > 0 {
-		fmt.Printf("configured env: %s\n", strings.Join(st.ConfiguredEnvVars, ", "))
-	}
-	if len(st.MissingEnvVars) > 0 {
-		fmt.Printf("missing env: %s\n", strings.Join(st.MissingEnvVars, ", "))
-	}
-	fmt.Printf("plist path:  %s\n", st.PlistPath)
-	fmt.Printf("state path:  %s\n", st.RuntimeStatePath)
-	fmt.Printf("log dir:     %s\n", st.LogDir)
-	if st.StateError != "" {
-		fmt.Printf("state err:   %s\n", st.StateError)
-	}
-	return nil
+	return renderServiceStatusPlain(st)
 }
 
 type ServiceLogCmd struct {
@@ -1103,6 +1070,50 @@ func (r *runContext) renderStackReportPlain(model stackReportViewModel) error {
 	}
 	for _, orphan := range model.Orphans {
 		fmt.Printf("orphan: %s\n", orphan)
+	}
+	return nil
+}
+
+func renderServiceStatusPlain(st app.LaunchdServiceStatus) error {
+	fmt.Printf("label:       %s\n", st.Label)
+	fmt.Printf("installed:   %s\n", boolLabel(st.Installed))
+	fmt.Printf("running:     %s\n", boolLabel(st.Running))
+	fmt.Printf("ready:       %s\n", boolLabel(st.Ready))
+	if st.Stale {
+		fmt.Printf("stale:       %s\n", boolLabel(true))
+	}
+	if st.Phase != "" {
+		fmt.Printf("phase:       %s\n", st.Phase)
+	}
+	if st.PID > 0 {
+		fmt.Printf("pid:         %d\n", st.PID)
+	}
+	if st.CaddyPID > 0 {
+		fmt.Printf("caddy pid:   %d\n", st.CaddyPID)
+	}
+	if st.StartedAt != "" {
+		fmt.Printf("started at:  %s\n", st.StartedAt)
+	}
+	if st.ConfigPath != "" {
+		fmt.Printf("config path: %s\n", st.ConfigPath)
+	}
+	if st.EnvFilePath != "" {
+		fmt.Printf("env file:    %s\n", st.EnvFilePath)
+	}
+	if len(st.RequiredEnvVars) > 0 {
+		fmt.Printf("required env: %s\n", strings.Join(st.RequiredEnvVars, ", "))
+	}
+	if len(st.ConfiguredEnvVars) > 0 {
+		fmt.Printf("configured env: %s\n", strings.Join(st.ConfiguredEnvVars, ", "))
+	}
+	if len(st.MissingEnvVars) > 0 {
+		fmt.Printf("missing env: %s\n", strings.Join(st.MissingEnvVars, ", "))
+	}
+	fmt.Printf("plist path:  %s\n", st.PlistPath)
+	fmt.Printf("state path:  %s\n", st.RuntimeStatePath)
+	fmt.Printf("log dir:     %s\n", st.LogDir)
+	if st.StateError != "" {
+		fmt.Printf("state err:   %s\n", st.StateError)
 	}
 	return nil
 }

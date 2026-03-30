@@ -8,13 +8,14 @@ import (
 )
 
 var promptServiceEnvValues = defaultPromptServiceEnvValues
+var saveServiceEnvValues = app.SaveServiceEnvValues
 
-func maybeCollectMissingServiceEnv(r *runContext) (app.ServiceEnvironmentReport, error) {
+func maybeCollectMissingServiceEnv(r *runContext, allowPrompt bool) (app.ServiceEnvironmentReport, error) {
 	report, err := prepareServiceEnvRun()
 	if err != nil {
 		return app.ServiceEnvironmentReport{}, err
 	}
-	if !r.canPromptInteractively() || len(report.MissingEnvVars) == 0 {
+	if !allowPrompt || !r.canPromptInteractively() || len(report.MissingEnvVars) == 0 {
 		return report, nil
 	}
 	values, err := promptServiceEnvValues(report)
@@ -24,7 +25,7 @@ func maybeCollectMissingServiceEnv(r *runContext) (app.ServiceEnvironmentReport,
 	if len(values) == 0 {
 		return report, nil
 	}
-	if err := app.SaveServiceEnvValues(report.EnvFilePath, values); err != nil {
+	if err := saveServiceEnvValues(report.EnvFilePath, values); err != nil {
 		return report, err
 	}
 	return prepareServiceEnvRun()

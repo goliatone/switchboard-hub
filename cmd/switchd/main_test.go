@@ -442,6 +442,44 @@ func TestStatusCommandSupportsJSONMode(t *testing.T) {
 	}
 }
 
+func TestServiceStatusCommandSupportsJSONMode(t *testing.T) {
+	orig := serviceStatusInfoRun
+	defer func() { serviceStatusInfoRun = orig }()
+
+	serviceStatusInfoRun = func() (app.LaunchdServiceStatus, error) {
+		return app.LaunchdServiceStatus{
+			Label:             "com.goliatone.switchd",
+			Installed:         true,
+			Running:           true,
+			Ready:             true,
+			Phase:             "ready",
+			PID:               1234,
+			CaddyPID:          4321,
+			EnvFilePath:       "/tmp/service.env",
+			RequiredEnvVars:   []string{"TOKEN"},
+			ConfiguredEnvVars: []string{"TOKEN"},
+			PlistPath:         "/Library/LaunchDaemons/com.goliatone.switchd.plist",
+			RuntimeStatePath:  "/var/run/switchboard-hub/daemon-state.json",
+			LogDir:            "/var/log/switchboard-hub",
+		}, nil
+	}
+
+	stdout, _, err := runCLIForTest(t, nil, []string{"--json", "service", "status"})
+	if err != nil {
+		t.Fatalf("runCLIForTest returned error: %v", err)
+	}
+	for _, want := range []string{
+		"\"label\": \"com.goliatone.switchd\"",
+		"\"running\": true",
+		"\"phase\": \"ready\"",
+		"\"env_file_path\": \"/tmp/service.env\"",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout=%q missing %q", stdout, want)
+		}
+	}
+}
+
 func TestTunnelInitCommandJSONIncludesEnvSummary(t *testing.T) {
 	orig := prepareServiceEnvRun
 	defer func() { prepareServiceEnvRun = orig }()
@@ -573,6 +611,47 @@ func TestStackPlanCommandJSON(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(stdout), []byte(`"type": "create_app"`)) {
 		t.Fatalf("expected json output to contain create_app action, got %s", stdout)
+	}
+}
+
+func TestRenderServiceStatusPlain(t *testing.T) {
+	st := app.LaunchdServiceStatus{
+		Label:             "com.goliatone.switchd",
+		Installed:         true,
+		Running:           false,
+		Ready:             false,
+		Stale:             true,
+		Phase:             "failed",
+		PID:               1234,
+		CaddyPID:          4321,
+		StartedAt:         "2026-03-29T23:00:00Z",
+		ConfigPath:        "/tmp/config.yaml",
+		EnvFilePath:       "/tmp/service.env",
+		RequiredEnvVars:   []string{"TOKEN"},
+		ConfiguredEnvVars: []string{"TOKEN"},
+		MissingEnvVars:    []string{"SECRET"},
+		PlistPath:         "/Library/LaunchDaemons/com.goliatone.switchd.plist",
+		RuntimeStatePath:  "/var/run/switchboard-hub/daemon-state.json",
+		LogDir:            "/var/log/switchboard-hub",
+		StateError:        "launchctl failed",
+	}
+
+	stdout, err := captureStdout(t, func() error {
+		return renderServiceStatusPlain(st)
+	})
+	if err != nil {
+		t.Fatalf("captureStdout returned error: %v", err)
+	}
+	for _, want := range []string{
+		"label:       com.goliatone.switchd",
+		"stale:       yes",
+		"phase:       failed",
+		"missing env: SECRET",
+		"state err:   launchctl failed",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout=%q missing %q", stdout, want)
+		}
 	}
 }
 
@@ -710,6 +789,218 @@ func TestStackPlanCommandRoutesToTUI(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected stack TUI runner to be called")
+	}
+}
+
+func TestServiceStatusCommandRoutesToTUI(t *testing.T) {
+	origStatus := serviceStatusInfoRun
+	origTUI := serviceStatusTUIRun
+	defer func() {
+		serviceStatusInfoRun = origStatus
+		serviceStatusTUIRun = origTUI
+	}()
+
+	serviceStatusInfoRun = func() (app.LaunchdServiceStatus, error) {
+		return app.LaunchdServiceStatus{
+			Label:            "com.goliatone.switchd",
+			Installed:        true,
+			Running:          true,
+			Ready:            true,
+			PlistPath:        "/Library/LaunchDaemons/com.goliatone.switchd.plist",
+			RuntimeStatePath: "/var/run/switchboard-hub/daemon-state.json",
+			LogDir:           "/var/log/switchboard-hub",
+		}, nil
+	}
+
+	called := false
+	serviceStatusTUIRun = func(status app.LaunchdServiceStatus, styles cliStyles) error {
+		called = true
+		if status.Label != "com.goliatone.switchd" {
+			t.Fatalf("unexpected status %#v", status)
+		}
+		return nil
+	}
+
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"--ui", "tui", "service", "status"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			UI:          uiModeTUI,
+			Interactive: true,
+		}},
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected service status TUI runner to be called")
+	}
+}
+
+func TestMaybeCollectMissingServiceEnvSkipsPromptWhenDisabled(t *testing.T) {
+	origPrepare := prepareServiceEnvRun
+	origPrompt := promptServiceEnvValues
+	origSave := saveServiceEnvValues
+	defer func() {
+		prepareServiceEnvRun = origPrepare
+		promptServiceEnvValues = origPrompt
+		saveServiceEnvValues = origSave
+	}()
+
+	expected := app.ServiceEnvironmentReport{
+		EnvFilePath:     "/tmp/service.env",
+		RequiredEnvVars: []string{"TOKEN"},
+		MissingEnvVars:  []string{"TOKEN"},
+	}
+	prepareServiceEnvRun = func() (app.ServiceEnvironmentReport, error) {
+		return expected, nil
+	}
+	promptServiceEnvValues = func(app.ServiceEnvironmentReport) (map[string]string, error) {
+		t.Fatal("did not expect prompt to run")
+		return nil, nil
+	}
+	saveServiceEnvValues = func(string, map[string]string) error {
+		t.Fatal("did not expect save to run")
+		return nil
+	}
+
+	got, err := maybeCollectMissingServiceEnv(&runContext{
+		out: cliOutput{opts: outputOptions{Interactive: true}},
+	}, false)
+	if err != nil {
+		t.Fatalf("maybeCollectMissingServiceEnv returned error: %v", err)
+	}
+	if got.EnvFilePath != expected.EnvFilePath || len(got.MissingEnvVars) != 1 || got.MissingEnvVars[0] != "TOKEN" {
+		t.Fatalf("unexpected report %#v", got)
+	}
+}
+
+func TestMaybeCollectMissingServiceEnvPromptsAndSavesWhenAllowed(t *testing.T) {
+	origPrepare := prepareServiceEnvRun
+	origPrompt := promptServiceEnvValues
+	origSave := saveServiceEnvValues
+	defer func() {
+		prepareServiceEnvRun = origPrepare
+		promptServiceEnvValues = origPrompt
+		saveServiceEnvValues = origSave
+	}()
+
+	callCount := 0
+	prepareServiceEnvRun = func() (app.ServiceEnvironmentReport, error) {
+		callCount++
+		if callCount == 1 {
+			return app.ServiceEnvironmentReport{
+				EnvFilePath:     "/tmp/service.env",
+				RequiredEnvVars: []string{"TOKEN"},
+				MissingEnvVars:  []string{"TOKEN"},
+			}, nil
+		}
+		return app.ServiceEnvironmentReport{
+			EnvFilePath:         "/tmp/service.env",
+			RequiredEnvVars:     []string{"TOKEN"},
+			ConfiguredEnvVars:   []string{"TOKEN"},
+			MissingEnvVars:      nil,
+			EnvFileUpdated:      true,
+			EnvFileTemplateVars: []string{"TOKEN"},
+		}, nil
+	}
+	promptServiceEnvValues = func(report app.ServiceEnvironmentReport) (map[string]string, error) {
+		if report.EnvFilePath != "/tmp/service.env" {
+			t.Fatalf("unexpected prompt report %#v", report)
+		}
+		return map[string]string{"TOKEN": "secret"}, nil
+	}
+	saveCalled := false
+	saveServiceEnvValues = func(path string, values map[string]string) error {
+		saveCalled = true
+		if path != "/tmp/service.env" {
+			t.Fatalf("unexpected save path %q", path)
+		}
+		if values["TOKEN"] != "secret" {
+			t.Fatalf("unexpected values %#v", values)
+		}
+		return nil
+	}
+
+	got, err := maybeCollectMissingServiceEnv(&runContext{
+		out: cliOutput{opts: outputOptions{Interactive: true}},
+	}, true)
+	if err != nil {
+		t.Fatalf("maybeCollectMissingServiceEnv returned error: %v", err)
+	}
+	if !saveCalled {
+		t.Fatal("expected save to run")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected prepare to run twice, got %d", callCount)
+	}
+	if len(got.ConfiguredEnvVars) != 1 || got.ConfiguredEnvVars[0] != "TOKEN" {
+		t.Fatalf("unexpected final report %#v", got)
+	}
+}
+
+func TestTunnelInitNonInteractiveSkipsServiceEnvPrompt(t *testing.T) {
+	origPrepare := prepareServiceEnvRun
+	origPrompt := promptServiceEnvValues
+	origSave := saveServiceEnvValues
+	defer func() {
+		prepareServiceEnvRun = origPrepare
+		promptServiceEnvValues = origPrompt
+		saveServiceEnvValues = origSave
+	}()
+
+	prepareServiceEnvRun = func() (app.ServiceEnvironmentReport, error) {
+		return app.ServiceEnvironmentReport{
+			EnvFilePath:     "/tmp/service.env",
+			RequiredEnvVars: []string{"TOKEN"},
+			MissingEnvVars:  []string{"TOKEN"},
+		}, nil
+	}
+	promptServiceEnvValues = func(app.ServiceEnvironmentReport) (map[string]string, error) {
+		t.Fatal("did not expect prompt during non-interactive tunnel init")
+		return nil, nil
+	}
+	saveServiceEnvValues = func(string, map[string]string) error {
+		t.Fatal("did not expect save during non-interactive tunnel init")
+		return nil
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	client := switchboard.New(switchboard.Options{
+		ConfigPath: cfgPath,
+		ProviderRegistry: testCLIRegistry{
+			provider: newTestCLIProvider(),
+		},
+		ApplyFunc: func(string, switchboard.Config) error { return nil },
+	})
+
+	cli := CLI{}
+	parser, err := newParser(&cli, defaultCommandName)
+	if err != nil {
+		t.Fatalf("newParser returned error: %v", err)
+	}
+	ctx, err := parser.Parse([]string{"tunnel", "init", "--provider", "mock", "--non-interactive"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if err := ctx.Run(&runContext{
+		parser: parser,
+		out: cliOutput{opts: outputOptions{
+			CommandName: defaultCommandName,
+			Interactive: true,
+		}},
+		client: client,
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
 	}
 }
 

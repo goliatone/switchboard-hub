@@ -93,6 +93,15 @@ type stackReportTUIModel struct {
 	selected int
 }
 
+type serviceStatusTUIModel struct {
+	styles   cliStyles
+	viewport viewport.Model
+	width    int
+	height   int
+	ready    bool
+	status   app.LaunchdServiceStatus
+}
+
 func runServiceLogTUI(opts app.ServiceLogOptions, commandName string, styles cliStyles) error {
 	model := &serviceLogTUIModel{
 		styles:       styles,
@@ -111,6 +120,16 @@ func runStackReportTUI(model stackReportViewModel, styles cliStyles) error {
 	tui := &stackReportTUIModel{
 		styles: styles,
 		model:  model,
+	}
+	p := tea.NewProgram(tui, tea.WithAltScreen())
+	_, err := p.Run()
+	return err
+}
+
+func runServiceStatusTUI(status app.LaunchdServiceStatus, styles cliStyles) error {
+	tui := &serviceStatusTUIModel{
+		styles: styles,
+		status: status,
 	}
 	p := tea.NewProgram(tui, tea.WithAltScreen())
 	_, err := p.Run()
@@ -713,6 +732,51 @@ func (m *stackReportTUIModel) renderListContent() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m *serviceStatusTUIModel) Init() tea.Cmd { return nil }
+
+func (m *serviceStatusTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		if !m.ready {
+			m.viewport = viewport.New(msg.Width, tuiViewportHeight(msg.Height, 8))
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = tuiViewportHeight(msg.Height, 8)
+		}
+		m.viewport.SetContent(renderServiceStatusTUIContent(m.status, m.styles))
+		return m, nil
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		}
+		if m.ready {
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+	}
+	return m, nil
+}
+
+func (m *serviceStatusTUIModel) View() string {
+	header := renderTUIHeader(m.styles, "switchd service status", []string{
+		"running=" + boolLabel(m.status.Running),
+		"ready=" + boolLabel(m.status.Ready),
+	})
+	footer := renderTUIFooter(m.styles,
+		tuiHelpEntry{Key: "q", Label: "quit"},
+	)
+	body := renderTUIState(m.styles, "loading", "Loading service status...")
+	if m.ready {
+		body = renderTUIPanel(m.styles, "Service", m.viewport.View())
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+}
+
 var statusLoader = statusReportInfo
 
 func (m *statusTUIModel) Init() tea.Cmd {
@@ -973,6 +1037,97 @@ func stackSessionHealth(row stackServiceRow) string {
 		}
 		return "info"
 	}
+}
+
+func renderServiceStatusTUIContent(st app.LaunchdServiceStatus, styles cliStyles) string {
+	lines := []string{
+		styles.section.Render("Lifecycle"),
+		renderStatusCheckLine("state", serviceStatusHealth(st), serviceStatusSummary(st), styles),
+	}
+	if st.Phase != "" {
+		lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("phase"), st.Phase))
+	}
+	if st.StartedAt != "" {
+		lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("started"), st.StartedAt))
+	}
+
+	lines = append(lines, "", styles.section.Render("Processes"))
+	if st.PID > 0 {
+		lines = append(lines, fmt.Sprintf("%s %d", styles.key.Render("switchd"), st.PID))
+	} else {
+		lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("switchd"), styles.empty.Render("(not running)")))
+	}
+	if st.CaddyPID > 0 {
+		lines = append(lines, fmt.Sprintf("%s %d", styles.key.Render("caddy"), st.CaddyPID))
+	}
+
+	lines = append(lines, "", styles.section.Render("Environment"))
+	lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("required"), joinOrNone(st.RequiredEnvVars)))
+	lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("configured"), joinOrNone(st.ConfiguredEnvVars)))
+	lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("missing"), joinOrNone(st.MissingEnvVars)))
+
+	lines = append(lines, "", styles.section.Render("Paths"))
+	lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("plist"), st.PlistPath))
+	lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("state"), st.RuntimeStatePath))
+	lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("logs"), st.LogDir))
+	if st.ConfigPath != "" {
+		lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("config"), st.ConfigPath))
+	}
+	if st.EnvFilePath != "" {
+		lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("env"), st.EnvFilePath))
+	}
+
+	if st.StateError != "" || len(st.MissingEnvVars) > 0 || (!st.Running && st.Installed) {
+		lines = append(lines, "", styles.section.Render("Next Steps"))
+		if st.StateError != "" {
+			lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("error"), st.StateError))
+		}
+		if len(st.MissingEnvVars) > 0 && st.EnvFilePath != "" {
+			lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("action"), "add missing env vars to "+st.EnvFilePath))
+		}
+		if !st.Running && st.Installed {
+			lines = append(lines, fmt.Sprintf("%s %s", styles.key.Render("start"), "sudo switchd service start"))
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func serviceStatusSummary(st app.LaunchdServiceStatus) string {
+	parts := []string{
+		"installed=" + boolLabel(st.Installed),
+		"running=" + boolLabel(st.Running),
+		"ready=" + boolLabel(st.Ready),
+	}
+	if st.Stale {
+		parts = append(parts, "stale="+boolLabel(true))
+	}
+	if len(st.MissingEnvVars) > 0 {
+		parts = append(parts, "missing_env="+strings.Join(st.MissingEnvVars, ","))
+	}
+	return strings.Join(parts, "  ")
+}
+
+func serviceStatusHealth(st app.LaunchdServiceStatus) string {
+	switch {
+	case strings.TrimSpace(st.StateError) != "":
+		return "error"
+	case st.Running && st.Ready:
+		return "ready"
+	case st.Stale:
+		return "warning"
+	case st.Installed:
+		return "info"
+	default:
+		return "warning"
+	}
+}
+
+func joinOrNone(values []string) string {
+	if len(values) == 0 {
+		return "(none)"
+	}
+	return strings.Join(values, ", ")
 }
 
 func serviceSummary(report app.StatusReport) string {
