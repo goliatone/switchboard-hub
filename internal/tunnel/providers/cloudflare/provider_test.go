@@ -15,14 +15,15 @@ import (
 )
 
 type fakeProcess struct {
-	pid    int
-	killed bool
+	pid     int
+	killed  bool
+	killErr error
 }
 
 func (p *fakeProcess) PID() int { return p.pid }
 func (p *fakeProcess) Kill() error {
 	p.killed = true
-	return nil
+	return p.killErr
 }
 
 func TestInitFailsWhenBinaryMissing(t *testing.T) {
@@ -322,6 +323,52 @@ func TestStartStopAndStatus(t *testing.T) {
 	}
 	if !fp.killed {
 		t.Fatal("expected process kill")
+	}
+}
+
+func TestStopTreatsAlreadyFinishedProcessAsStopped(t *testing.T) {
+	fp := &fakeProcess{pid: 4242, killErr: os.ErrProcessDone}
+	p := New(
+		WithProcessStarter(func(string, ...string) (process, error) { return fp, nil }),
+	)
+	session, err := p.Start(context.Background(), tunnel.StartRequest{
+		Endpoint: tunnel.Endpoint{ID: "endpoint-1"},
+		LocalURL: "http://127.0.0.1:3000",
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	if err := p.Stop(context.Background(), session.ID); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+	if !fp.killed {
+		t.Fatal("expected process kill attempt")
+	}
+}
+
+func TestStopReturnsUnexpectedKillError(t *testing.T) {
+	fp := &fakeProcess{pid: 4242, killErr: errors.New("permission denied")}
+	p := New(
+		WithProcessStarter(func(string, ...string) (process, error) { return fp, nil }),
+	)
+	session, err := p.Start(context.Background(), tunnel.StartRequest{
+		Endpoint: tunnel.Endpoint{ID: "endpoint-1"},
+		LocalURL: "http://127.0.0.1:3000",
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	err = p.Stop(context.Background(), session.ID)
+	if err == nil {
+		t.Fatal("expected Stop error")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !fp.killed {
+		t.Fatal("expected process kill attempt")
 	}
 }
 

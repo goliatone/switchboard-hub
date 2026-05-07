@@ -431,6 +431,9 @@ func isIdempotentStopError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if isProcessGone(err) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "session not found") ||
 		strings.Contains(msg, "not running") ||

@@ -248,7 +248,7 @@ func TestBackgroundDaemonResumePersistedApps(t *testing.T) {
 				EndpointID:           "endpoint-1",
 				ActiveSessionID:      "old-session",
 				ActiveSessionPID:     0,
-				ActiveSessionStarted: "2026-03-27T10:00:00Z",
+				ActiveSessionStarted: "2026-03-27T09:00:00Z",
 			},
 		},
 	}
@@ -306,7 +306,7 @@ func TestBackgroundDaemonResumePersistedAppsDegradesOnProviderError(t *testing.T
 				EndpointID:           "endpoint-1",
 				ActiveSessionID:      "old-session",
 				ActiveSessionPID:     0,
-				ActiveSessionStarted: "2026-03-27T10:00:00Z",
+				ActiveSessionStarted: "2026-03-27T09:00:00Z",
 			},
 		},
 	}
@@ -622,6 +622,168 @@ func TestEnsureAppRuntimeKeepsAlivePersistedPID(t *testing.T) {
 	}
 	if provider.startCalls != 0 {
 		t.Fatalf("expected no provider start, got %d", provider.startCalls)
+	}
+}
+
+func TestEnsureAppRuntimeRestartsStaleSessionWhenStopAlreadyFinished(t *testing.T) {
+	provider := &backgroundTestProvider{
+		statusReady: false,
+		startPID:    5152,
+		stopErr:     fmt.Errorf("stop cloudflare session old-session: %w", os.ErrProcessDone),
+	}
+	reg := tunnel.NewRegistry()
+	if err := reg.Register("mock", func() tunnel.Provider { return provider }); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	svc := NewService(ServiceOptions{
+		ProviderRegistry: reg,
+	})
+	cfg := config.Default("test", "10.0.0.1")
+	cfg.Apps = []config.App{
+		{
+			Name:      "esign",
+			LocalHost: "esign.test",
+			LocalPort: 3000,
+			PublicEndpoint: config.AppPublicEndpoint{
+				Provider:             "mock",
+				Host:                 "esign.example.com",
+				EndpointID:           "endpoint-1",
+				ActiveSessionID:      "old-session",
+				ActiveSessionPID:     0,
+				ActiveSessionStarted: "2026-03-27T10:00:00Z",
+			},
+		},
+	}
+
+	got, err := svc.EnsureAppRuntime(cfg, "esign")
+	if err != nil {
+		t.Fatalf("EnsureAppRuntime returned error: %v", err)
+	}
+	if provider.stopCalls != 1 {
+		t.Fatalf("expected one stale session stop attempt, got %d", provider.stopCalls)
+	}
+	if provider.startCalls != 1 {
+		t.Fatalf("expected one provider start, got %d", provider.startCalls)
+	}
+	if got.PublicEndpoint.ActiveSessionID != "endpoint-1-session" {
+		t.Fatalf("unexpected session: %#v", got.PublicEndpoint)
+	}
+	if got.PublicEndpoint.ActiveSessionPID != 5152 {
+		t.Fatalf("unexpected session pid: %#v", got.PublicEndpoint)
+	}
+	if cfg.Apps[0].PublicEndpoint.ActiveSessionStarted != "2026-03-27T10:00:00Z" {
+		t.Fatalf("unexpected session start time: %#v", cfg.Apps[0].PublicEndpoint)
+	}
+}
+
+func TestEnsureAppRuntimeReturnsUnexpectedStaleSessionStopError(t *testing.T) {
+	provider := &backgroundTestProvider{
+		statusReady: false,
+		startPID:    5152,
+		stopErr:     errors.New("cloudflare permission denied"),
+	}
+	reg := tunnel.NewRegistry()
+	if err := reg.Register("mock", func() tunnel.Provider { return provider }); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	svc := NewService(ServiceOptions{
+		ProviderRegistry: reg,
+	})
+	cfg := config.Default("test", "10.0.0.1")
+	cfg.Apps = []config.App{
+		{
+			Name:      "esign",
+			LocalHost: "esign.test",
+			LocalPort: 3000,
+			PublicEndpoint: config.AppPublicEndpoint{
+				Provider:             "mock",
+				Host:                 "esign.example.com",
+				EndpointID:           "endpoint-1",
+				ActiveSessionID:      "old-session",
+				ActiveSessionPID:     0,
+				ActiveSessionStarted: "2026-03-27T09:00:00Z",
+			},
+		},
+	}
+
+	_, err := svc.EnsureAppRuntime(cfg, "esign")
+	if err == nil {
+		t.Fatal("expected stale session stop error")
+	}
+	if !strings.Contains(err.Error(), "cloudflare permission denied") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.stopCalls != 1 {
+		t.Fatalf("expected one stale session stop attempt, got %d", provider.stopCalls)
+	}
+	if provider.startCalls != 0 {
+		t.Fatalf("expected no provider start, got %d", provider.startCalls)
+	}
+	ep := cfg.Apps[0].PublicEndpoint
+	if ep.ActiveSessionID != "old-session" || ep.ActiveSessionPID != 0 || ep.ActiveSessionStarted != "2026-03-27T09:00:00Z" {
+		t.Fatalf("expected stale session metadata to remain on hard stop error, got %#v", ep)
+	}
+}
+
+func TestAppUpPersistsRuntimeAfterStaleCloudflareStop(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default("test", "10.0.0.1")
+	cfg.Apps = []config.App{
+		{
+			Name:      "esign",
+			LocalHost: "esign.test",
+			LocalPort: 3000,
+			PublicEndpoint: config.AppPublicEndpoint{
+				Provider:             "mock",
+				Host:                 "esign.example.com",
+				EndpointID:           "endpoint-1",
+				ActiveSessionID:      "old-session",
+				ActiveSessionPID:     0,
+				ActiveSessionStarted: "2026-03-27T09:00:00Z",
+			},
+		},
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("config.Save returned error: %v", err)
+	}
+
+	provider := &backgroundTestProvider{
+		statusReady: false,
+		startPID:    6161,
+		stopErr:     errors.New("stop cloudflare session old-session: os: process already finished"),
+	}
+	reg := tunnel.NewRegistry()
+	if err := reg.Register("mock", func() tunnel.Provider { return provider }); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	svc := NewService(ServiceOptions{
+		ConfigPath:       cfgPath,
+		ProviderRegistry: reg,
+		ApplyConfig:      func(string, *config.Config) error { return nil },
+	})
+
+	if err := svc.AppUp("esign"); err != nil {
+		t.Fatalf("AppUp returned error: %v", err)
+	}
+	got, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load returned error: %v", err)
+	}
+	if provider.stopCalls != 1 {
+		t.Fatalf("expected one stale session stop attempt, got %d", provider.stopCalls)
+	}
+	if provider.startCalls != 1 {
+		t.Fatalf("expected one provider start, got %d", provider.startCalls)
+	}
+	if len(got.Apps) != 1 {
+		t.Fatalf("expected one app, got %d", len(got.Apps))
+	}
+	ep := got.Apps[0].PublicEndpoint
+	if ep.ActiveSessionID != "endpoint-1-session" || ep.ActiveSessionPID != 6161 {
+		t.Fatalf("unexpected persisted endpoint: %#v", ep)
+	}
+	if ep.ActiveSessionStarted != "2026-03-27T10:00:00Z" {
+		t.Fatalf("unexpected persisted start time: %#v", ep)
 	}
 }
 
@@ -1281,6 +1443,7 @@ type backgroundTestProvider struct {
 	statusReady bool
 	startPID    int
 	startErr    error
+	stopErr     error
 	startCalls  int
 	stopCalls   int
 }
@@ -1326,6 +1489,9 @@ func (p *backgroundTestProvider) Stop(_ context.Context, sessionID string) error
 	p.stopCalls++
 	if strings.TrimSpace(sessionID) == "" {
 		return errors.New("session id is required")
+	}
+	if p.stopErr != nil {
+		return p.stopErr
 	}
 	return nil
 }

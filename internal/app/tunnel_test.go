@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -96,6 +98,12 @@ func TestResolveProviderNameUnknownProvider(t *testing.T) {
 func TestIsIdempotentStopError(t *testing.T) {
 	if !isIdempotentStopError(assertErr("session not found")) {
 		t.Fatal("expected idempotent stop error")
+	}
+	if !isIdempotentStopError(fmt.Errorf("stop cloudflare session abc-123: %w", os.ErrProcessDone)) {
+		t.Fatal("expected already-finished process to be idempotent")
+	}
+	if !isIdempotentStopError(assertErr("stop cloudflare session abc-123: os: process already finished")) {
+		t.Fatal("expected already-finished process text to be idempotent")
 	}
 	if isIdempotentStopError(assertErr("hard failure")) {
 		t.Fatal("did not expect idempotent classification")

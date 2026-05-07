@@ -1262,6 +1262,9 @@ func isProcessGone(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "process already finished") ||
 		strings.Contains(msg, "no such process")

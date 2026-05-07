@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/goliatone/switchboard-hub/internal/diag"
@@ -333,12 +334,18 @@ func (p *Provider) Stop(_ context.Context, sessionID string) error {
 			return fmt.Errorf("find process for session %s: %w", sessionID, err)
 		}
 		if err := proc.Kill(); err != nil {
+			if isProcessGoneError(err) {
+				return nil
+			}
 			return fmt.Errorf("stop cloudflare session %s: %w", sessionID, err)
 		}
 		return nil
 	}
 
 	if err := state.process.Kill(); err != nil {
+		if isProcessGoneError(err) {
+			return nil
+		}
 		return fmt.Errorf("stop cloudflare session %s: %w", sessionID, err)
 	}
 	return nil
@@ -691,6 +698,18 @@ func pidFromSessionID(sessionID string) (int, error) {
 		return 0, errors.New("invalid pid")
 	}
 	return pid, nil
+}
+
+func isProcessGoneError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "process already finished") ||
+		strings.Contains(msg, "no such process")
 }
 
 var _ tunnel.Provider = (*Provider)(nil)
