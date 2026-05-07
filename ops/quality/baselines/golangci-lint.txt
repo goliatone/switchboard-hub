@@ -1,0 +1,178 @@
+* errcheck: 10
+* funlen: 2
+* gocyclo: 13
+* govet: 54
+* nestif: 9
+* unused: 11
+99 issues:
+^
+cmd/switchd/main.go:1103:6: func appSessionLabel is unused (unused)
+cmd/switchd/main.go:481:1: `if err == nil` has complex nested blocks (complexity: 6) (nestif)
+cmd/switchd/main.go:889:13: Error return value of `fmt.Fprintf` is not checked (errcheck)
+cmd/switchd/main.go:891:14: Error return value of `fmt.Fprintf` is not checked (errcheck)
+cmd/switchd/main.go:954:1: `if ok` has complex nested blocks (complexity: 5) (nestif)
+cmd/switchd/main_test.go:1554:5: shadow: declaration of "err" shadows declaration at line 1548 (govet)
+cmd/switchd/main_test.go:1557:5: shadow: declaration of "err" shadows declaration at line 1548 (govet)
+cmd/switchd/main_test.go:1560:5: shadow: declaration of "err" shadows declaration at line 1548 (govet)
+cmd/switchd/main_test.go:1563:5: shadow: declaration of "err" shadows declaration at line 1548 (govet)
+cmd/switchd/main_test.go:1566:5: shadow: declaration of "err" shadows declaration at line 1548 (govet)
+cmd/switchd/main_test.go:1569:5: shadow: declaration of "err" shadows declaration at line 1548 (govet)
+cmd/switchd/main_test.go:1610:5: shadow: declaration of "err" shadows declaration at line 1604 (govet)
+cmd/switchd/main_test.go:1613:5: shadow: declaration of "err" shadows declaration at line 1604 (govet)
+cmd/switchd/main_test.go:1616:5: shadow: declaration of "err" shadows declaration at line 1604 (govet)
+cmd/switchd/main_test.go:1619:5: shadow: declaration of "err" shadows declaration at line 1604 (govet)
+cmd/switchd/main_test.go:1650:5: shadow: declaration of "err" shadows declaration at line 1645 (govet)
+cmd/switchd/main_test.go:1766:5: shadow: declaration of "err" shadows declaration at line 1760 (govet)
+cmd/switchd/main_test.go:1769:5: shadow: declaration of "err" shadows declaration at line 1760 (govet)
+cmd/switchd/main_test.go:1821:5: shadow: declaration of "err" shadows declaration at line 1816 (govet)
+cmd/switchd/main_test.go:1824:5: shadow: declaration of "err" shadows declaration at line 1816 (govet)
+cmd/switchd/main_test.go:1854:5: shadow: declaration of "err" shadows declaration at line 1849 (govet)
+cmd/switchd/main_test.go:1857:5: shadow: declaration of "err" shadows declaration at line 1849 (govet)
+cmd/switchd/main_test.go:1879:5: shadow: declaration of "err" shadows declaration at line 1874 (govet)
+cmd/switchd/main_test.go:1972:15: Error return value of `r.Close` is not checked (errcheck)
+cmd/switchd/main_test.go:1991:15: Error return value of `r.Close` is not checked (errcheck)
+cmd/switchd/styles.go:36:6: Function 'newCLIStyles' is too long (92 > 90) (funlen)
+cmd/switchd/text_output.go:78:6: func buildRouteTableRows is unused (unused)
+cmd/switchd/tui.go:1056:1: cyclomatic complexity 16 of func `renderServiceStatusTUIContent` is high (> 15) (gocyclo)
+cmd/switchd/tui.go:166:1: cyclomatic complexity 24 of func `(*serviceLogTUIModel).Update` is high (> 15) (gocyclo)
+cmd/switchd/tui.go:320:1: cyclomatic complexity 22 of func `(*appListTUIModel).Update` is high (> 15) (gocyclo)
+cmd/switchd/tui.go:970:1: `if report.TunnelHealthError != ""` has complex nested blocks (complexity: 5) (nestif)
+defer f.Close()
+defer r.Close()
+defer resp.Body.Close()
+fmt.Fprintf(w, "  %s: %v\n", styles.key.Render(k), fields[k])
+fmt.Fprintf(w, "%s %s\n", badge, msg)
+func (c *cloudflareAPIClient) request(ctx context.Context, method, path string, body any, out any) error {
+func (d *backgroundDaemon) Run(ctx context.Context) error {
+func (m *appListTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *serviceLogTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, error) {
+func (s *Stack) Resolve(tld string) (*ResolvedStack, error) {
+func (s *Stack) Validate() error {
+func Init(tld, dnsIP string, enableTLS bool, tlsMode string, tlsCertFile string, tlsKeyFile string) error {
+func SaveServiceEnvValues(path string, updates map[string]string) error {
+func Status() error {
+func TLSMkcert(certFile, keyFile string, install bool) error {
+func Up(service *app.Service, path string) (*Report, error) {
+func appSessionLabel(a config.App) string {
+func applyTunnelInitOptions(c *config.Config, configPath, providerName string, opts TunnelInitOptions) error {
+func buildRouteTableRows(routes []config.Route) [][]string {
+func dialHostFromRouteDial(dial string) string {
+func fromInternalCapabilities(c tunnel.Capabilities) Capabilities {
+func fromInternalEndpoint(ep tunnel.Endpoint) Endpoint {
+func fromInternalEndpointStatus(st tunnel.EndpointStatus) EndpointStatus {
+func fromInternalSession(s tunnel.Session) Session {
+func newCLIStyles(interactive bool) cliStyles {
+func parseDialPort(dial string) (int, bool) {
+func renderServiceStatusTUIContent(st app.LaunchdServiceStatus, styles cliStyles) string {
+func toInternalEndpointRequest(req EndpointRequest) tunnel.EndpointRequest {
+func toInternalProviderConfig(cfg ProviderConfig) tunnel.ProviderConfig {
+func toInternalStartRequest(req StartRequest) tunnel.StartRequest {
+if !ok {
+if _, err := Up(service, stackPath); err != nil {
+if _, err := f.Seek(s.offset, io.SeekStart); err != nil {
+if _, err := p.lookPath("cloudflared"); err != nil {
+if _, err := p.runCloudflared(ctx, "tunnel", "create", tunnelName); err != nil {
+if _, err := resolved.RenderOutputs(); err == nil || !strings.Contains(err.Error(), `service "missing" not found`) {
+if _, statErr := os.Stat(p); statErr != nil {
+if details, ok := tunnel.ActionableFromError(err); ok {
+if err := client.AppDown("demo"); err != nil {
+if err := client.AppUp("active-app"); err != nil {
+if err := client.AppUp("demo"); err != nil {
+if err := client.CreateApp("active-app", 3000, nil); err != nil {
+if err := client.CreateApp("demo", 3000, nil); err != nil {
+if err := client.CreateApp("idle-app", 3001, nil); err != nil {
+if err := client.ExposeApp("active-app", "mock", "active.example.com"); err != nil {
+if err := client.ExposeApp("demo", "mock", "demo.example.com"); err != nil {
+if err := client.ExposeApp("idle-app", "mock", "idle.example.com"); err != nil {
+if err := client.SaveConfig(cfg); err != nil {
+if err := config.Save(cfgPath, cfg); err != nil {
+if err := config.Save(p, c); err != nil {
+if err := d.service.ApplyConfig(cfgPath, cfg); err != nil {
+if err := ensureServiceEnvTemplate(&report); err != nil {
+if err := initProviderWithConfig(pr, c, a.PublicEndpoint.Provider, 20*time.Second); err != nil {
+if err := initProviderWithConfig(pr, c, h.Provider, 8*time.Second); err != nil {
+if err := initProviderWithConfig(pr, c, providerName, 20*time.Second); err != nil {
+if err := os.MkdirAll(filepath.Dir(launchdPlistPath), 0o755); err != nil {
+if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+if err := os.MkdirAll(launchdRuntimeDir, 0o755); err != nil {
+if err := os.WriteFile(stackPath, []byte(stackYAML), 0o644); err != nil {
+if err := p.initAPIMode(ctx, runtimeCfg); err != nil {
+if err := prepareServiceLogFiles(); err != nil {
+if err := runInit(); err != nil {
+if err := validateTLSConfig(c); err != nil {
+if err := waitForCaddyAdmin(cfg.Caddy.Admin, 15*time.Second); err != nil {
+if err := writeDaemonRuntimeState(state); err != nil {
+if len(indexes) == 1 {
+if report, err := maybeCollectMissingServiceEnv(r, !c.NonInteractive); err == nil {
+if report.TunnelHealthError != "" {
+if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
+if strings.TrimSpace(report.ServiceError) != "" {
+internal/app/app.go:112:1: `if statErr != nil` has complex nested blocks (complexity: 12) (nestif)
+internal/app/app.go:136:6: shadow: declaration of "err" shadows declaration at line 102 (govet)
+internal/app/app.go:139:6: shadow: declaration of "err" shadows declaration at line 102 (govet)
+internal/app/app.go:331:6: shadow: declaration of "err" shadows declaration at line 322 (govet)
+internal/app/app.go:335:5: shadow: declaration of "err" shadows declaration at line 322 (govet)
+internal/app/app.go:404:6: Function 'TLSMkcert' has too many statements (50 > 45) (funlen)
+internal/app/app.go:97:1: cyclomatic complexity 29 of func `Init` is high (> 15) (gocyclo)
+internal/app/apps.go:251:6: func dialHostFromRouteDial is unused (unused)
+internal/app/background_service.go:1050:15: Error return value of `f.Close` is not checked (errcheck)
+internal/app/background_service.go:350:15: Error return value of `f.Close` is not checked (errcheck)
+internal/app/background_service.go:352:8: shadow: declaration of "err" shadows declaration at line 316 (govet)
+internal/app/background_service.go:420:15: Error return value of `f.Close` is not checked (errcheck)
+internal/app/background_service.go:605:1: cyclomatic complexity 22 of func `(*backgroundDaemon).Run` is high (> 15) (gocyclo)
+internal/app/background_service.go:621:5: shadow: declaration of "err" shadows declaration at line 609 (govet)
+internal/app/background_service.go:640:5: shadow: declaration of "err" shadows declaration at line 609 (govet)
+internal/app/background_service.go:645:5: shadow: declaration of "err" shadows declaration at line 609 (govet)
+internal/app/background_service.go:654:5: shadow: declaration of "err" shadows declaration at line 609 (govet)
+internal/app/background_service.go:658:5: shadow: declaration of "err" shadows declaration at line 609 (govet)
+internal/app/background_service.go:663:5: shadow: declaration of "err" shadows declaration at line 609 (govet)
+internal/app/background_service.go:666:5: shadow: declaration of "err" shadows declaration at line 609 (govet)
+internal/app/background_service.go:671:5: shadow: declaration of "err" shadows declaration at line 609 (govet)
+internal/app/background_service.go:833:1: cyclomatic complexity 16 of func `SaveServiceEnvValues` is high (> 15) (gocyclo)
+internal/app/background_service.go:902:5: shadow: declaration of "err" shadows declaration at line 898 (govet)
+internal/app/background_service.go:927:5: shadow: declaration of "err" shadows declaration at line 919 (govet)
+internal/app/background_service.go:934:5: shadow: declaration of "err" shadows declaration at line 919 (govet)
+internal/app/background_service.go:937:5: shadow: declaration of "err" shadows declaration at line 919 (govet)
+internal/app/background_service.go:940:5: shadow: declaration of "err" shadows declaration at line 919 (govet)
+internal/app/background_service_test.go:1572:15: Error return value of `f.Close` is not checked (errcheck)
+internal/app/service.go:258:1: `if err != nil` has complex nested blocks (complexity: 10) (nestif)
+internal/app/service.go:269:7: shadow: declaration of "err" shadows declaration at line 258 (govet)
+internal/app/service.go:394:5: shadow: declaration of "err" shadows declaration at line 377 (govet)
+internal/app/service.go:422:1: cyclomatic complexity 17 of func `(*Service).EnsureAppRuntime` is high (> 15) (gocyclo)
+internal/app/service.go:441:5: shadow: declaration of "err" shadows declaration at line 426 (govet)
+internal/app/service.go:444:1: `if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != ""` has complex nested blocks (complexity: 5) (nestif)
+internal/app/status.go:212:1: cyclomatic complexity 19 of func `Status` is high (> 15) (gocyclo)
+internal/app/status.go:227:1: `if strings.TrimSpace(report.ServiceError) != ""` has complex nested blocks (complexity: 8) (nestif)
+internal/app/tunnel.go:163:1: cyclomatic complexity 16 of func `applyTunnelInitOptions` is high (> 15) (gocyclo)
+internal/app/tunnel.go:392:6: shadow: declaration of "err" shadows declaration at line 386 (govet)
+internal/caddy/caddy.go:176:23: Error return value of `resp.Body.Close` is not checked (errcheck)
+internal/config/config.go:365:6: func parseDialPort is unused (unused)
+internal/stack/reconcile.go:100:1: cyclomatic complexity 30 of func `Up` is high (> 15) (gocyclo)
+internal/stack/reconcile.go:474:1: `if len(indexes) == 1` has complex nested blocks (complexity: 6) (nestif)
+internal/stack/reconcile_test.go:166:5: shadow: declaration of "err" shadows declaration at line 156 (govet)
+internal/stack/reconcile_test.go:216:5: shadow: declaration of "err" shadows declaration at line 206 (govet)
+internal/stack/reconcile_test.go:312:8: shadow: declaration of "err" shadows declaration at line 302 (govet)
+internal/stack/resolve.go:9:1: cyclomatic complexity 19 of func `(*Stack).Resolve` is high (> 15) (gocyclo)
+internal/stack/stack_test.go:168:8: shadow: declaration of "err" shadows declaration at line 164 (govet)
+internal/stack/validate.go:12:1: cyclomatic complexity 23 of func `(*Stack).Validate` is high (> 15) (gocyclo)
+internal/tunnel/providers/cloudflare/api_mode.go:568:1: cyclomatic complexity 19 of func `(*cloudflareAPIClient).request` is high (> 15) (gocyclo)
+internal/tunnel/providers/cloudflare/api_mode.go:594:23: Error return value of `resp.Body.Close` is not checked (errcheck)
+internal/tunnel/providers/cloudflare/provider.go:188:8: shadow: declaration of "err" shadows declaration at line 182 (govet)
+internal/tunnel/providers/cloudflare/provider.go:204:6: shadow: declaration of "err" shadows declaration at line 182 (govet)
+internal/tunnel/providers/cloudflare/provider.go:246:9: shadow: declaration of "err" shadows declaration at line 241 (govet)
+internal/tunnel/providers/cloudflare/provider.go:327:1: `if !ok` has complex nested blocks (complexity: 5) (nestif)
+pkg/switchboard/client_test.go:101:5: shadow: declaration of "err" shadows declaration at line 91 (govet)
+pkg/switchboard/client_test.go:104:5: shadow: declaration of "err" shadows declaration at line 91 (govet)
+pkg/switchboard/client_test.go:107:5: shadow: declaration of "err" shadows declaration at line 91 (govet)
+pkg/switchboard/client_test.go:122:5: shadow: declaration of "err" shadows declaration at line 91 (govet)
+pkg/switchboard/client_test.go:153:5: shadow: declaration of "err" shadows declaration at line 146 (govet)
+pkg/switchboard/client_test.go:171:5: shadow: declaration of "err" shadows declaration at line 146 (govet)
+pkg/switchboard/client_test.go:97:5: shadow: declaration of "err" shadows declaration at line 91 (govet)
+pkg/switchboard/types.go:378:6: func toInternalProviderConfig is unused (unused)
+pkg/switchboard/types.go:384:6: func fromInternalCapabilities is unused (unused)
+pkg/switchboard/types.go:396:6: func toInternalEndpointRequest is unused (unused)
+pkg/switchboard/types.go:407:6: func fromInternalEndpoint is unused (unused)
+pkg/switchboard/types.go:419:6: func toInternalStartRequest is unused (unused)
+pkg/switchboard/types.go:435:6: func fromInternalSession is unused (unused)
+pkg/switchboard/types.go:448:6: func fromInternalEndpointStatus is unused (unused)
