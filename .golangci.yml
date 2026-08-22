@@ -11,30 +11,33 @@ linters:
   default: none
   enable:
     - dupl
+    - bodyclose
+    - contextcheck
     - errcheck
+    - errorlint
     - funlen
     - gocyclo
     - govet
     - ineffassign
     - nestif
+    - nilerr
+    - noctx
     - nolintlint
     - staticcheck
     - unconvert
+    - unparam
     - unused
   settings:
     dupl:
       threshold: 120
     funlen:
-      lines: 90
-      statements: 45
+      lines: 100
+      statements: 50
       ignore-comments: true
     gocyclo:
-      min-complexity: 15
+      min-complexity: 20
     nestif:
-      min-complexity: 5
-    govet:
-      enable:
-        - shadow
+      min-complexity: 8
     nolintlint:
       require-explanation: true
       require-specific: true

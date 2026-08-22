@@ -75,14 +75,6 @@ func (o cliOutput) printStatusLine(label, status, summary string) {
 	fmt.Println(renderStatusCheckLine(label, status, summary, o.styles()))
 }
 
-func buildRouteTableRows(routes []config.Route) [][]string {
-	rows := make([][]string, 0, len(routes))
-	for _, route := range routes {
-		rows = append(rows, []string{route.Host, route.Dial})
-	}
-	return rows
-}
-
 func renderRoutesPlain(_ cliOutput, routes []config.Route) error {
 	if len(routes) == 0 {
 		fmt.Println("(no routes)")

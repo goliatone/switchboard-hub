@@ -36,7 +36,7 @@ trap cleanup EXIT
 run_tool() {
     case "${tool_name}" in
         golangci-lint)
-            "${GOLANGCI_LINT_BIN:-golangci-lint}" run "$@"
+            "${GOLANGCI_LINT_BIN:-golangci-lint}" run --output.text.print-issued-lines=false "$@"
             ;;
         gosec)
             "${GOSEC_BIN:-gosec}" ${GOSEC_ARGS:-} -quiet -fmt=golint "$@"
@@ -52,8 +52,9 @@ normalize_output() {
     sed "s#${repo_root}/##g" \
         | sed 's#^\./##' \
         | sed 's/^[[:space:]]*//' \
-        | awk 'NF' \
-        | sort -u
+        | awk '/^[^:]+:[0-9]+:[0-9]+: /' \
+        | sed -E 's/:[0-9]+:[0-9]+: /: /' \
+        | sort
 }
 
 collect_findings() {
@@ -70,6 +71,10 @@ collect_findings() {
 
     normalize_output <"${raw_output}" >"${normalized_output}"
 
+    if [ "${status}" -gt 1 ]; then
+        cat "${raw_output}" >&2
+        exit "${status}"
+    fi
     if [ "${status}" -ne 0 ] && [ ! -s "${normalized_output}" ]; then
         cat "${raw_output}" >&2
         exit "${status}"
@@ -90,7 +95,7 @@ case "${command_name}" in
         fi
 
         collect_findings "${current_raw}" "${current_normalized}" "$@"
-        awk 'NF && $1 !~ /^#/' "${baseline_file}" | sort -u >"${baseline_normalized}"
+        awk 'NF && $1 !~ /^#/' "${baseline_file}" | sort >"${baseline_normalized}"
         comm -23 "${current_normalized}" "${baseline_normalized}" >"${new_findings}"
         comm -13 "${current_normalized}" "${baseline_normalized}" >"${resolved_findings}"
 

@@ -435,18 +435,17 @@ func (c *StackEnvCmd) Run(r *runContext) error {
 
 type TunnelProvidersCmd struct{}
 
-func (c *TunnelProvidersCmd) Run(r *runContext) error {
+func (c *TunnelProvidersCmd) Run(r *runContext) {
 	providers := r.client.TunnelProviders()
 	if r.out.opts.JSON {
 		r.out.jsonOut(os.Stdout, map[string]any{"providers": providers, "count": len(providers)})
-		return nil
+		return
 	}
 	rows := make([][]string, 0, len(providers))
 	for _, p := range providers {
 		rows = append(rows, []string{p})
 	}
 	r.out.printTable([]string{"PROVIDER"}, rows)
-	return nil
 }
 
 type TunnelInitCmd struct {
@@ -478,29 +477,33 @@ func (c *TunnelInitCmd) Run(r *runContext) error {
 	if _, ok := fields["provider"]; !ok && strings.TrimSpace(c.Provider) != "" {
 		fields["provider"] = strings.TrimSpace(c.Provider)
 	}
-	if report, err := maybeCollectMissingServiceEnv(r, !c.NonInteractive); err == nil {
-		if strings.TrimSpace(report.EnvFilePath) != "" {
-			fields["env_file"] = report.EnvFilePath
-		}
-		if len(report.RequiredEnvVars) > 0 {
-			fields["required_env"] = strings.Join(report.RequiredEnvVars, ", ")
-		}
-		if len(report.MissingEnvVars) > 0 {
-			fields["missing_env"] = strings.Join(report.MissingEnvVars, ", ")
-		}
-		if report.EnvFileCreated {
-			fields["env_file_created"] = true
-		}
-		if report.EnvFileUpdated {
-			fields["env_file_updated"] = true
-		}
-		r.out.ok("Tunnel provider initialized", fields)
-		renderServiceEnvWarnings(r, report)
-		return nil
-	} else {
+	report, err := maybeCollectMissingServiceEnv(r, !c.NonInteractive)
+	if err != nil {
 		r.out.ok("Tunnel provider initialized", fields)
 		r.out.warn("Unable to prepare service env template", map[string]any{"detail": err})
-		return nil
+	} else {
+		mergeServiceEnvReportFields(fields, report)
+		r.out.ok("Tunnel provider initialized", fields)
+		renderServiceEnvWarnings(r, report)
+	}
+	return nil
+}
+
+func mergeServiceEnvReportFields(fields map[string]any, report app.ServiceEnvironmentReport) {
+	if strings.TrimSpace(report.EnvFilePath) != "" {
+		fields["env_file"] = report.EnvFilePath
+	}
+	if len(report.RequiredEnvVars) > 0 {
+		fields["required_env"] = strings.Join(report.RequiredEnvVars, ", ")
+	}
+	if len(report.MissingEnvVars) > 0 {
+		fields["missing_env"] = strings.Join(report.MissingEnvVars, ", ")
+	}
+	if report.EnvFileCreated {
+		fields["env_file_created"] = true
+	}
+	if report.EnvFileUpdated {
+		fields["env_file_updated"] = true
 	}
 }
 
@@ -684,7 +687,7 @@ type DaemonCmd struct {
 
 type VersionCmd struct{}
 
-func (c *VersionCmd) Run(r *runContext) error {
+func (c *VersionCmd) Run(r *runContext) {
 	info := map[string]any{
 		"version":    strings.TrimSpace(version),
 		"git_tag":    strings.TrimSpace(gitTag),
@@ -695,7 +698,7 @@ func (c *VersionCmd) Run(r *runContext) error {
 	}
 	if r.out.opts.JSON {
 		r.out.jsonOut(os.Stdout, info)
-		return nil
+		return
 	}
 	fmt.Printf("version:    %s\n", info["version"])
 	if gt := fmt.Sprint(info["git_tag"]); gt != "" {
@@ -707,7 +710,6 @@ func (c *VersionCmd) Run(r *runContext) error {
 		fmt.Printf("build tags: %s\n", bt)
 	}
 	fmt.Printf("go:         %s\n", info["go_version"])
-	return nil
 }
 
 type CaddyRunCmd struct{}
@@ -886,9 +888,9 @@ func (o cliOutput) textEvent(w io.Writer, level, msg string, fields map[string]a
 	case "ERR":
 		badge = styles.badgeErr.Render("[" + level + "]")
 	}
-	fmt.Fprintf(w, "%s %s\n", badge, msg)
+	_, _ = fmt.Fprintf(w, "%s %s\n", badge, msg)
 	for _, k := range sortedFieldKeys(fields) {
-		fmt.Fprintf(w, "  %s: %v\n", styles.key.Render(k), fields[k])
+		_, _ = fmt.Fprintf(w, "  %s: %v\n", styles.key.Render(k), fields[k])
 	}
 }
 
@@ -952,33 +954,33 @@ func (o cliOutput) commandError(command string, err error) {
 	}
 
 	if details, ok := tunnel.ActionableFromError(err); ok {
-		o.textEvent(os.Stderr, "ERR", command+" failed", map[string]any{"code": strings.TrimSpace(details.Code)})
-		if strings.TrimSpace(details.What) != "" {
-			fmt.Fprintln(os.Stderr, "  what:", details.What)
-		}
-		if strings.TrimSpace(details.Why) != "" {
-			fmt.Fprintln(os.Stderr, "  why:", details.Why)
-		}
-		for _, check := range details.Checks {
-			check = strings.TrimSpace(check)
-			if check == "" {
-				continue
-			}
-			fmt.Fprintln(os.Stderr, "  check:", check)
-		}
-		for i, step := range details.NextSteps {
-			step = strings.TrimSpace(step)
-			if step == "" {
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "  next %d: %s\n", i+1, step)
-		}
-		if err != nil && strings.TrimSpace(err.Error()) != "" {
-			fmt.Fprintln(os.Stderr, "  detail:", err)
-		}
+		o.renderActionableError(command, err, details)
 		return
 	}
 	o.textEvent(os.Stderr, "ERR", command+" failed", map[string]any{"detail": err})
+}
+
+func (o cliOutput) renderActionableError(command string, err error, details tunnel.ActionableDetails) {
+	o.textEvent(os.Stderr, "ERR", command+" failed", map[string]any{"code": strings.TrimSpace(details.Code)})
+	if strings.TrimSpace(details.What) != "" {
+		fmt.Fprintln(os.Stderr, "  what:", details.What)
+	}
+	if strings.TrimSpace(details.Why) != "" {
+		fmt.Fprintln(os.Stderr, "  why:", details.Why)
+	}
+	for _, check := range details.Checks {
+		if check = strings.TrimSpace(check); check != "" {
+			fmt.Fprintln(os.Stderr, "  check:", check)
+		}
+	}
+	for i, step := range details.NextSteps {
+		if step = strings.TrimSpace(step); step != "" {
+			fmt.Fprintf(os.Stderr, "  next %d: %s\n", i+1, step)
+		}
+	}
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		fmt.Fprintln(os.Stderr, "  detail:", err)
+	}
 }
 
 func (o cliOutput) printTable(headers []string, rows [][]string) {
@@ -1098,16 +1100,6 @@ func valueOrDash(v string) string {
 		return "-"
 	}
 	return v
-}
-
-func appSessionLabel(a config.App) string {
-	if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
-		return "active"
-	}
-	if strings.TrimSpace(a.PublicEndpoint.Host) != "" {
-		return "idle"
-	}
-	return "none"
 }
 
 func switchboardAppSessionLabel(a switchboard.App, health switchboard.AppTunnelHealth, healthKnown bool) string {

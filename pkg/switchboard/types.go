@@ -7,7 +7,6 @@ import (
 
 	"github.com/goliatone/switchboard-hub/internal/app"
 	"github.com/goliatone/switchboard-hub/internal/config"
-	"github.com/goliatone/switchboard-hub/internal/tunnel"
 )
 
 type Config struct {
@@ -373,83 +372,4 @@ func fromInternalAppTunnelHealth(st []app.AppTunnelHealth) []AppTunnelHealth {
 		})
 	}
 	return out
-}
-
-func toInternalProviderConfig(cfg ProviderConfig) tunnel.ProviderConfig {
-	values := map[string]string{}
-	maps.Copy(values, cfg.Values)
-	return tunnel.ProviderConfig{Values: values}
-}
-
-func fromInternalCapabilities(c tunnel.Capabilities) Capabilities {
-	return Capabilities{
-		StableHostname:     c.StableHostname,
-		HTTPForwarding:     c.HTTPForwarding,
-		HTTPSForwarding:    c.HTTPSForwarding,
-		OAuthSuitable:      c.OAuthSuitable,
-		SupportsSSE:        c.SupportsSSE,
-		SupportsWebSockets: c.SupportsWebSockets,
-		Notes:              append([]string(nil), c.Notes...),
-	}
-}
-
-func toInternalEndpointRequest(req EndpointRequest) tunnel.EndpointRequest {
-	metadata := map[string]string{}
-	maps.Copy(metadata, req.Metadata)
-	return tunnel.EndpointRequest{
-		Name:       req.Name,
-		PublicHost: req.PublicHost,
-		LocalURL:   req.LocalURL,
-		Metadata:   metadata,
-	}
-}
-
-func fromInternalEndpoint(ep tunnel.Endpoint) Endpoint {
-	metadata := map[string]string{}
-	maps.Copy(metadata, ep.Metadata)
-	return Endpoint{
-		ID:       ep.ID,
-		Provider: ep.Provider,
-		Name:     ep.Name,
-		Host:     ep.Host,
-		Metadata: metadata,
-	}
-}
-
-func toInternalStartRequest(req StartRequest) tunnel.StartRequest {
-	sessionEnv := map[string]string{}
-	maps.Copy(sessionEnv, req.SessionEnv)
-	return tunnel.StartRequest{
-		Endpoint: tunnel.Endpoint{
-			ID:       req.Endpoint.ID,
-			Provider: req.Endpoint.Provider,
-			Name:     req.Endpoint.Name,
-			Host:     req.Endpoint.Host,
-			Metadata: req.Endpoint.Metadata,
-		},
-		LocalURL:   req.LocalURL,
-		SessionEnv: sessionEnv,
-	}
-}
-
-func fromInternalSession(s tunnel.Session) Session {
-	metadata := map[string]string{}
-	maps.Copy(metadata, s.Metadata)
-	return Session{
-		ID:         s.ID,
-		Provider:   s.Provider,
-		EndpointID: s.EndpointID,
-		PID:        s.PID,
-		StartedAt:  s.StartedAt,
-		Metadata:   metadata,
-	}
-}
-
-func fromInternalEndpointStatus(st tunnel.EndpointStatus) EndpointStatus {
-	return EndpointStatus{
-		Ready:     st.Ready,
-		Endpoint:  fromInternalEndpoint(st.Endpoint),
-		Message:   st.Message,
-		SessionID: st.SessionID,
-	}
 }

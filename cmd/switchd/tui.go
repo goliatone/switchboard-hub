@@ -166,35 +166,10 @@ func (m *serviceLogTUIModel) Init() tea.Cmd {
 func (m *serviceLogTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		if !m.ready {
-			m.viewport = viewport.New(msg.Width, tuiViewportHeight(msg.Height, 8))
-			m.ready = true
-		} else {
-			m.viewport.Width = msg.Width
-			m.viewport.Height = tuiViewportHeight(msg.Height, 8)
-		}
-		m.viewport.SetContent(strings.Join(m.lines, "\n"))
-		if !m.paused {
-			m.viewport.GotoBottom()
-		}
+		m.resize(msg)
 		return m, nil
 	case serviceLogLineMsg:
-		if msg.gen != m.gen {
-			return m, nil
-		}
-		m.lines = append(m.lines, m.renderServiceLogLine(msg.event))
-		if len(m.lines) > m.lineLimit {
-			m.lines = m.lines[len(m.lines)-m.lineLimit:]
-		}
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.lines, "\n"))
-			if !m.paused {
-				m.viewport.GotoBottom()
-			}
-		}
-		return m, waitForTUIMessage(m.msgs)
+		return m, m.consumeLogLine(msg)
 	case serviceLogErrMsg:
 		if msg.gen != m.gen {
 			return m, nil
@@ -207,42 +182,79 @@ func (m *serviceLogTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			m.stop()
-			return m, tea.Quit
-		case "p":
-			m.paused = !m.paused
-			if !m.paused && m.ready {
-				m.viewport.GotoBottom()
-			}
-			return m, nil
-		case "c":
-			m.lines = nil
-			if m.ready {
-				m.viewport.SetContent("")
-			}
-			return m, nil
-		case "s":
-			m.stream = nextStreamMode(m.stream)
-			m.lastErr = ""
-			m.lines = nil
-			if m.ready {
-				m.viewport.SetContent("")
-			}
-			return m, m.restartStream()
-		case "f":
-			m.follow = !m.follow
-			m.lastErr = ""
-			return m, m.restartStream()
+		return m, m.handleKey(msg)
+	}
+	return m, nil
+}
+
+func (m *serviceLogTUIModel) resize(msg tea.WindowSizeMsg) {
+	m.width, m.height = msg.Width, msg.Height
+	if !m.ready {
+		m.viewport = viewport.New(msg.Width, tuiViewportHeight(msg.Height, 8))
+		m.ready = true
+	} else {
+		m.viewport.Width = msg.Width
+		m.viewport.Height = tuiViewportHeight(msg.Height, 8)
+	}
+	m.viewport.SetContent(strings.Join(m.lines, "\n"))
+	if !m.paused {
+		m.viewport.GotoBottom()
+	}
+}
+
+func (m *serviceLogTUIModel) consumeLogLine(msg serviceLogLineMsg) tea.Cmd {
+	if msg.gen != m.gen {
+		return nil
+	}
+	m.lines = append(m.lines, m.renderServiceLogLine(msg.event))
+	if len(m.lines) > m.lineLimit {
+		m.lines = m.lines[len(m.lines)-m.lineLimit:]
+	}
+	if m.ready {
+		m.viewport.SetContent(strings.Join(m.lines, "\n"))
+		if !m.paused {
+			m.viewport.GotoBottom()
 		}
+	}
+	return waitForTUIMessage(m.msgs)
+}
+
+func (m *serviceLogTUIModel) handleKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.stop()
+		return tea.Quit
+	case "p":
+		m.paused = !m.paused
+		if !m.paused && m.ready {
+			m.viewport.GotoBottom()
+		}
+	case "c":
+		m.clearLines()
+	case "s":
+		m.stream = nextStreamMode(m.stream)
+		m.lastErr = ""
+		m.clearLines()
+		return m.restartStream()
+	case "f":
+		m.follow = !m.follow
+		m.lastErr = ""
+		return m.restartStream()
+	default:
 		if m.ready {
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
-			return m, cmd
+			return cmd
 		}
 	}
-	return m, nil
+	return nil
+}
+
+func (m *serviceLogTUIModel) clearLines() {
+	m.lines = nil
+	if m.ready {
+		m.viewport.SetContent("")
+	}
 }
 
 func (m *serviceLogTUIModel) View() string {
@@ -334,70 +346,65 @@ func (m *appListTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		if m.filterMode {
-			switch msg.String() {
-			case "esc":
-				m.filterMode = false
-				return m, nil
-			case "enter":
-				m.filterMode = false
-				return m, nil
-			case "backspace":
-				if len(m.filter) > 0 {
-					m.filter = m.filter[:len(m.filter)-1]
-					m.applyFilter()
-				}
-				return m, nil
-			}
-			if msg.Type == tea.KeyRunes {
-				m.filter += msg.String()
-				m.applyFilter()
-			}
+			m.handleFilterKey(msg)
 			return m, nil
 		}
-
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "/", "f":
-			m.filterMode = true
-			return m, nil
-		case "esc":
-			if m.filter != "" {
-				m.filter = ""
-				m.applyFilter()
-			}
-			return m, nil
-		case "up", "k":
-			if m.selected > 0 {
-				m.selected--
-				m.ensureSelectionVisible()
-				m.refreshViewport()
-			}
-			return m, nil
-		case "down", "j":
-			if m.selected < len(m.visibleRows)-1 {
-				m.selected++
-				m.ensureSelectionVisible()
-				m.refreshViewport()
-			}
-			return m, nil
-		case "pgup", "b":
-			if m.selected > 0 {
-				m.selected = max(0, m.selected-m.viewport.Height)
-				m.ensureSelectionVisible()
-				m.refreshViewport()
-			}
-			return m, nil
-		case "pgdown", " ":
-			if m.selected < len(m.visibleRows)-1 {
-				m.selected = min(len(m.visibleRows)-1, m.selected+m.viewport.Height)
-				m.ensureSelectionVisible()
-				m.refreshViewport()
-			}
-			return m, nil
-		}
+		return m, m.handleListKey(msg)
 	}
 	return m, nil
+}
+
+func (m *appListTUIModel) handleFilterKey(msg tea.KeyMsg) {
+	switch msg.String() {
+	case "esc", "enter":
+		m.filterMode = false
+	case "backspace":
+		if len(m.filter) > 0 {
+			m.filter = m.filter[:len(m.filter)-1]
+			m.applyFilter()
+		}
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.filter += msg.String()
+			m.applyFilter()
+		}
+	}
+}
+
+func (m *appListTUIModel) handleListKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return tea.Quit
+	case "/", "f":
+		m.filterMode = true
+	case "esc":
+		if m.filter != "" {
+			m.filter = ""
+			m.applyFilter()
+		}
+	case "up", "k":
+		m.moveSelection(-1)
+	case "down", "j":
+		m.moveSelection(1)
+	case "pgup", "b":
+		m.moveSelection(-m.viewport.Height)
+	case "pgdown", " ":
+		m.moveSelection(m.viewport.Height)
+	}
+	return nil
+}
+
+func (m *appListTUIModel) moveSelection(delta int) {
+	if len(m.visibleRows) == 0 {
+		return
+	}
+	next := min(len(m.visibleRows)-1, max(0, m.selected+delta))
+	if next == m.selected {
+		return
+	}
+	m.selected = next
+	m.ensureSelectionVisible()
+	m.refreshViewport()
 }
 
 func (m *appListTUIModel) View() string {
@@ -967,27 +974,33 @@ func renderStatusReportTUI(report app.StatusReport, styles cliStyles) string {
 		}
 	}
 	lines = append(lines, "", styles.section.Render("Tunnel Health"))
-	if report.TunnelHealthError != "" {
-		lines = append(lines, styles.chipErr.Render("error")+" "+report.TunnelHealthError)
-	} else if len(report.TunnelHealth) == 0 {
-		lines = append(lines, styles.empty.Render("(none)"))
-	} else {
-		for _, item := range report.TunnelHealth {
-			label := item.AppName
-			if item.Provider != "" {
-				label += " [" + item.Provider + "]"
-			}
-			summary := item.Message
-			if item.Error != "" {
-				summary = item.Error
-			}
-			if item.SessionSummary != "" {
-				summary = strings.TrimSpace(summary + " " + item.SessionSummary)
-			}
-			lines = append(lines, renderStatusCheckLine(label, item.Status, summaryOrDefault(summary, item.Status), styles))
-		}
-	}
+	lines = append(lines, renderTunnelHealthLines(report, styles)...)
 	return strings.Join(lines, "\n")
+}
+
+func renderTunnelHealthLines(report app.StatusReport, styles cliStyles) []string {
+	if report.TunnelHealthError != "" {
+		return []string{styles.chipErr.Render("error") + " " + report.TunnelHealthError}
+	}
+	if len(report.TunnelHealth) == 0 {
+		return []string{styles.empty.Render("(none)")}
+	}
+	lines := make([]string, 0, len(report.TunnelHealth))
+	for _, item := range report.TunnelHealth {
+		label := item.AppName
+		if item.Provider != "" {
+			label += " [" + item.Provider + "]"
+		}
+		summary := item.Message
+		if item.Error != "" {
+			summary = item.Error
+		}
+		if item.SessionSummary != "" {
+			summary = strings.TrimSpace(summary + " " + item.SessionSummary)
+		}
+		lines = append(lines, renderStatusCheckLine(label, item.Status, summaryOrDefault(summary, item.Status), styles))
+	}
+	return lines
 }
 
 func renderStatusCheckLine(label, status, summary string, styles cliStyles) string {

@@ -1969,7 +1969,7 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	if err != nil {
 		t.Fatalf("os.Pipe returned error: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	os.Stdout = w
 	runErr := fn()
 	_ = w.Close()
@@ -1988,7 +1988,7 @@ func captureStderr(t *testing.T, fn func() error) (string, error) {
 	if err != nil {
 		t.Fatalf("os.Pipe returned error: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	os.Stderr = w
 	runErr := fn()
 	_ = w.Close()
