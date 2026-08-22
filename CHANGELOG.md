@@ -1,5 +1,20 @@
 # Changelog
 
+# [0.8.1](https://github.com/goliatone/switchboard-hub/compare/v0.8.0...v0.8.1) - (2026-08-22)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.8.1 ([d85d45b](https://github.com/goliatone/switchboard-hub/commit/d85d45b957462678445e63d1aad599881e7e8ff7))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Workbench tracker observation ([3946ca5](https://github.com/goliatone/switchboard-hub/commit/3946ca50dce8c0fa01108f066a262a62bb21b604))  - (goliatone)
+- Switchboard client enhancement ([3628866](https://github.com/goliatone/switchboard-hub/commit/362886611a4867ce4e7398dd31812a9fd2fb1e9b))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.8.0 ([8cc3d76](https://github.com/goliatone/switchboard-hub/commit/8cc3d7611895df6cde7b2dfa48ad4f049a713a04))  - (goliatone)
+
 # [0.8.0](https://github.com/goliatone/switchboard-hub/compare/v0.7.0...v0.8.0) - (2026-08-22)
 
 ## <!-- 1 -->🐛 Bug Fixes
