@@ -39,6 +39,8 @@ GO_QUALITY_BASELINE_DIR="${GO_QUALITY_BASELINE_DIR:-ops/quality/baselines}"
 GO_QUALITY_BASELINE_SCRIPT="${GO_QUALITY_BASELINE_SCRIPT:-./tools/quality/baseline.sh}"
 GO_QUALITY_GOCACHE="${GO_QUALITY_GOCACHE:-$(pwd)/.tmp/go-cache}"
 GO_QUALITY_GOTMPDIR="${GO_QUALITY_GOTMPDIR:-$(pwd)/.tmp/go-tmp}"
+GO_QUALITY_TOOL_BIN_DIR="${GO_QUALITY_TOOL_BIN_DIR:-$(pwd)/.tmp/go-tools/bin}"
+GO_COVERAGE_MIN="${GO_COVERAGE_MIN:-45.0}"
 GO_LINT_NEW_FROM_REV="${GO_LINT_NEW_FROM_REV:-origin/main}"
 
 
@@ -169,16 +171,26 @@ function _go:tool:path {
     return 1
 }
 
+function _go:tool:local_path {
+    local name=$1
+
+    printf '%s/%s\n' "${GO_QUALITY_TOOL_BIN_DIR%/}" "${name}"
+}
+
 function _go:tool:install {
     local name=$1
     local target=$2
     local go_bin
+    local tool_path
 
     go_bin=$(_go:bin) || return 1
     _go:quality:prepare_env || return 1
-    echo "Installing ${name} (${target})"
-    GOTOOLCHAIN="${GO_TOOLCHAIN}" "${go_bin}" install "${target}" || return 1
-    _go:tool:path "${name}" || return 1
+    mkdir -p "${GO_QUALITY_TOOL_BIN_DIR}"
+    echo "Installing ${name} (${target})" >&2
+    GOBIN="${GO_QUALITY_TOOL_BIN_DIR}" GOTOOLCHAIN="${GO_TOOLCHAIN}" "${go_bin}" install "${target}" || return 1
+    tool_path=$(_go:tool:local_path "${name}")
+    printf '%s\n' "${target}" > "${tool_path}.target"
+    printf '%s\n' "${tool_path}"
 }
 
 function _go:tool:ensure {
@@ -186,7 +198,8 @@ function _go:tool:ensure {
     local target=$2
     local tool_path
 
-    if tool_path=$(_go:tool:path "${name}" 2>/dev/null); then
+    tool_path=$(_go:tool:local_path "${name}")
+    if [ -x "${tool_path}" ] && [ -f "${tool_path}.target" ] && [ "$(<"${tool_path}.target")" = "${target}" ]; then
         printf '%s\n' "${tool_path}"
         return 0
     fi
@@ -323,6 +336,14 @@ function go:test {
     "${go_bin}" test "${packages[@]}"
 }
 
+function go:test:integration {
+    local go_bin
+
+    go_bin=$(_go:bin) || return 1
+    _go:quality:prepare_env || return 1
+    "${go_bin}" test -tags=integration ./internal/app -run '^TestIntegration_'
+}
+
 function go:race {
     local go_bin
     local -a packages=()
@@ -350,6 +371,47 @@ function go:cover {
         fi
     done < <(_go:packages "$@")
     "${go_bin}" test -coverprofile="${output_file}" "${packages[@]}" && "${go_bin}" tool cover -func "${output_file}"
+}
+
+function go:cover:check {
+    local go_bin
+    local -a packages=()
+    local output_file=${GO_COVERPROFILE:-.tmp/coverage.out}
+    local total
+
+    go_bin=$(_go:bin) || return 1
+    _go:quality:prepare_env || return 1
+    mkdir -p "$(dirname "${output_file}")"
+    while IFS= read -r pkg; do
+        if [ -n "${pkg}" ]; then
+            packages+=("${pkg}")
+        fi
+    done < <(_go:packages "$@")
+    "${go_bin}" test -coverprofile="${output_file}" "${packages[@]}" || return 1
+    total="$("${go_bin}" tool cover -func "${output_file}" | awk '/^total:/ { gsub(/%/, "", $3); print $3 }')"
+    if [ -z "${total}" ]; then
+        echo "Unable to determine total coverage" >&2
+        return 1
+    fi
+    if ! awk -v total="${total}" -v minimum="${GO_COVERAGE_MIN}" 'BEGIN { exit !(total >= minimum) }'; then
+        echo "Coverage ${total}% is below required ${GO_COVERAGE_MIN}%" >&2
+        return 1
+    fi
+    echo "Coverage ${total}% meets required ${GO_COVERAGE_MIN}%"
+}
+
+function go:mod:tidy:check {
+    local go_bin
+    local diff
+
+    go_bin=$(_go:bin) || return 1
+    _go:quality:prepare_env || return 1
+    diff="$("${go_bin}" mod tidy -diff)" || return 1
+    if [ -n "${diff}" ]; then
+        echo "go.mod or go.sum needs tidying:" >&2
+        echo "${diff}" >&2
+        return 1
+    fi
 }
 
 function go:vet {
@@ -554,8 +616,11 @@ function go:quality:all {
     go:fmt || return 1
     go:fix "$@" || return 1
     go:fmt:check || return 1
+    go:mod:tidy:check || return 1
     go:test "$@" || return 1
+    go:test:integration || return 1
     go:race "$@" || return 1
+    go:cover:check "$@" || return 1
     go:lint "$@" || return 1
     go:security:all "$@" || return 1
 }
