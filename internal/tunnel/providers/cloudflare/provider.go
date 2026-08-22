@@ -27,7 +27,7 @@ const (
 	errCodeAuthRequired       = "CF_AUTH_REQUIRED"
 	errCodeAuthCheckFailed    = "CF_AUTH_CHECK_FAILED"
 	errCodeAPIConfigInvalid   = "CF_API_CONFIG_INVALID"
-	errCodeAPITokenMissing    = "CF_API_TOKEN_MISSING"
+	errCodeAPITokenMissing    = "CF_API_TOKEN_MISSING" // #nosec G101 -- this is an error code, not a token.
 	errCodeAPIAuthFailed      = "CF_API_AUTH_FAILED"
 	errCodeAPIRequestFailed   = "CF_API_REQUEST_FAILED"
 	errCodeAPIDNSConflict     = "CF_API_DNS_CONFLICT"
@@ -209,7 +209,8 @@ func (p *Provider) Init(ctx context.Context, cfg tunnel.ProviderConfig) error {
 	}
 	originCertPath, checks, err := resolveOriginCertPath(cfg)
 	if err != nil {
-		if ie, ok := err.(*initError); ok {
+		var ie *initError
+		if errors.As(err, &ie) {
 			ie.checks = append(append([]string{}, checks...), ie.checks...)
 			return ie
 		}
@@ -243,8 +244,8 @@ func (p *Provider) EnsureEndpoint(ctx context.Context, req tunnel.EndpointReques
 		return tunnel.Endpoint{}, err
 	}
 	if tunnelID == "" {
-		if _, err := p.runCloudflared(ctx, "tunnel", "create", tunnelName); err != nil {
-			return tunnel.Endpoint{}, fmt.Errorf("create cloudflare tunnel %q: %w", tunnelName, err)
+		if _, createErr := p.runCloudflared(ctx, "tunnel", "create", tunnelName); createErr != nil {
+			return tunnel.Endpoint{}, fmt.Errorf("create cloudflare tunnel %q: %w", tunnelName, createErr)
 		}
 		tunnelID, err = p.findTunnelIDByName(ctx, tunnelName)
 		if err != nil {
@@ -325,27 +326,28 @@ func (p *Provider) Stop(_ context.Context, sessionID string) error {
 	}
 	p.mu.Unlock()
 	if !ok {
-		pid, err := pidFromSessionID(sessionID)
-		if err != nil {
-			return fmt.Errorf("session not found: %s", sessionID)
-		}
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return fmt.Errorf("find process for session %s: %w", sessionID, err)
-		}
-		if err := proc.Kill(); err != nil {
-			if isProcessGoneError(err) {
-				return nil
-			}
-			return fmt.Errorf("stop cloudflare session %s: %w", sessionID, err)
-		}
-		return nil
+		return stopRecoveredSession(sessionID)
 	}
 
 	if err := state.process.Kill(); err != nil {
 		if isProcessGoneError(err) {
 			return nil
 		}
+		return fmt.Errorf("stop cloudflare session %s: %w", sessionID, err)
+	}
+	return nil
+}
+
+func stopRecoveredSession(sessionID string) error {
+	pid, err := pidFromSessionID(sessionID)
+	if err != nil {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find process for session %s: %w", sessionID, err)
+	}
+	if err := proc.Kill(); err != nil && !isProcessGoneError(err) {
 		return fmt.Errorf("stop cloudflare session %s: %w", sessionID, err)
 	}
 	return nil
@@ -659,7 +661,7 @@ func (p *osProcess) Kill() error {
 }
 
 func startCommand(name string, args ...string) (process, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...) // #nosec G204 -- cloudflared command and args are built by provider lifecycle code.
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -676,14 +678,14 @@ func startCommand(name string, args ...string) (process, error) {
 
 func runCommand(ctx context.Context, name string, args ...string) (string, error) {
 	diag.LogCommand(name, args...)
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- cloudflared command and args are built by provider lifecycle code.
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
 		if s == "" {
 			return "", diag.SanitizeError(err)
 		}
-		return "", fmt.Errorf("%v: %s", diag.SanitizeError(err), diag.Redact(s))
+		return "", fmt.Errorf("%w: %s", diag.SanitizeError(err), diag.Redact(s))
 	}
 	return diag.Redact(s), nil
 }

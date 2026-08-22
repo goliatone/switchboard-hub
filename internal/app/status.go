@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -115,9 +116,15 @@ func StatusReportInfo() (StatusReport, error) {
 	health, hErr := appTunnelHealthStatusFromConfig(c)
 	if hErr != nil {
 		report.TunnelHealthError = hErr.Error()
-		return report, nil
+	} else {
+		report.TunnelHealth = buildTunnelHealthItems(health)
 	}
-	report.TunnelHealth = make([]StatusTunnelHealthItem, 0, len(health))
+
+	return report, nil
+}
+
+func buildTunnelHealthItems(health []AppTunnelHealth) []StatusTunnelHealthItem {
+	items := make([]StatusTunnelHealthItem, 0, len(health))
 	for _, h := range health {
 		item := StatusTunnelHealthItem{
 			AppName:      h.AppName,
@@ -140,10 +147,9 @@ func StatusReportInfo() (StatusReport, error) {
 			item.Message = strings.TrimSpace(h.Message)
 			item.SessionSummary = strings.TrimSpace(sessionSummary(h.SessionPID, h.StartedAt))
 		}
-		report.TunnelHealth = append(report.TunnelHealth, item)
+		items = append(items, item)
 	}
-
-	return report, nil
+	return items
 }
 
 func buildDNSStatus(c *config.Config) StatusCheckReport {
@@ -200,7 +206,7 @@ func buildCaddyStatus(c *config.Config, serviceStatus LaunchdServiceStatus, serv
 
 func defaultStatusCheckCaddy(adminURL string) error {
 	client := &http.Client{Timeout: 2 * time.Second}
-	req, _ := http.NewRequest("GET", strings.TrimRight(adminURL, "/")+"/config/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", strings.TrimRight(adminURL, "/")+"/config/", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -224,33 +230,7 @@ func Status() error {
 	fmt.Println()
 	fmt.Println("Checks:")
 
-	if strings.TrimSpace(report.ServiceError) != "" {
-		fmt.Println("- Service:", "error:", report.ServiceError)
-	} else {
-		st := report.Service
-		switch {
-		case st.Running:
-			if st.Phase != "" {
-				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d phase=%s\n", yesNo(st.Installed), yesNo(true), yesNo(st.Ready), st.PID, st.Phase)
-			} else {
-				fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d\n", yesNo(st.Installed), yesNo(true), yesNo(st.Ready), st.PID)
-			}
-		case st.Stale:
-			if st.StateError != "" {
-				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d error=%s\n", yesNo(st.Installed), yesNo(false), st.PID, st.StateError)
-			} else {
-				fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d\n", yesNo(st.Installed), yesNo(false), st.PID)
-			}
-		default:
-			fmt.Printf("- Service: installed=%s running=%s ready=%s\n", yesNo(st.Installed), yesNo(false), yesNo(st.Ready))
-		}
-		if len(st.MissingEnvVars) > 0 {
-			fmt.Printf("  Missing env for background resume: %s\n", strings.Join(st.MissingEnvVars, ", "))
-			if strings.TrimSpace(st.EnvFilePath) != "" {
-				fmt.Printf("  Add them to: %s\n", st.EnvFilePath)
-			}
-		}
-	}
+	printServiceStatus(report)
 
 	if !report.TLS.Valid {
 		fmt.Println("- TLS:", "invalid:", report.TLS.Error)
@@ -299,4 +279,30 @@ func Status() error {
 	}
 
 	return nil
+}
+
+func printServiceStatus(report StatusReport) {
+	if strings.TrimSpace(report.ServiceError) != "" {
+		fmt.Println("- Service:", "error:", report.ServiceError)
+		return
+	}
+	st := report.Service
+	switch {
+	case st.Running && st.Phase != "":
+		fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d phase=%s\n", yesNo(st.Installed), yesNo(true), yesNo(st.Ready), st.PID, st.Phase)
+	case st.Running:
+		fmt.Printf("- Service: installed=%s running=%s ready=%s pid=%d\n", yesNo(st.Installed), yesNo(true), yesNo(st.Ready), st.PID)
+	case st.Stale && st.StateError != "":
+		fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d error=%s\n", yesNo(st.Installed), yesNo(false), st.PID, st.StateError)
+	case st.Stale:
+		fmt.Printf("- Service: installed=%s running=%s stale_runtime_state pid=%d\n", yesNo(st.Installed), yesNo(false), st.PID)
+	default:
+		fmt.Printf("- Service: installed=%s running=%s ready=%s\n", yesNo(st.Installed), yesNo(false), yesNo(st.Ready))
+	}
+	if len(st.MissingEnvVars) > 0 {
+		fmt.Printf("  Missing env for background resume: %s\n", strings.Join(st.MissingEnvVars, ", "))
+		if strings.TrimSpace(st.EnvFilePath) != "" {
+			fmt.Printf("  Add them to: %s\n", st.EnvFilePath)
+		}
+	}
 }

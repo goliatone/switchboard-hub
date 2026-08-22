@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/goliatone/switchboard-hub/internal/config"
+	"github.com/goliatone/switchboard-hub/internal/safeio"
 )
 
 const (
@@ -337,7 +338,7 @@ func (s *serviceLogStream) poll(prefix bool) error {
 		return nil
 	}
 
-	f, err := os.Open(s.path)
+	f, err := safeio.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.stat = nil
@@ -347,10 +348,10 @@ func (s *serviceLogStream) poll(prefix bool) error {
 		}
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
-	if _, err := f.Seek(s.offset, io.SeekStart); err != nil {
-		return err
+	if _, seekErr := f.Seek(s.offset, io.SeekStart); seekErr != nil {
+		return seekErr
 	}
 
 	chunk, err := io.ReadAll(f)
@@ -413,11 +414,11 @@ func (s *serviceLogStream) writeLine(line string, prefix bool) error {
 }
 
 func readServiceLogFile(path string) ([]byte, os.FileInfo, error) {
-	f, err := os.Open(path)
+	f, err := safeio.Open(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	stat, err := f.Stat()
 	if err != nil {
@@ -460,7 +461,7 @@ func ServiceInstallWithReport() (ServiceEnvironmentReport, error) {
 	if err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
-	if _, err := startPreparedService(); err != nil {
+	if err := startPreparedService(); err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
 	return report, nil
@@ -492,7 +493,7 @@ func ServiceStartWithReport() (ServiceEnvironmentReport, error) {
 	if st.Running {
 		return report, nil
 	}
-	if _, err := startPreparedService(); err != nil {
+	if err := startPreparedService(); err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
 	return report, nil
@@ -630,60 +631,8 @@ func (d *backgroundDaemon) Run(ctx context.Context) error {
 		_ = writeDaemonRuntimeState(state)
 		return err
 	}
-
-	cfgPath, cfg, err := d.service.LoadOrCreateDefaultConfig()
+	caddyProc, err := d.startRuntime(ctx, &state, fail)
 	if err != nil {
-		return fail("config_error", err)
-	}
-	state.ConfigPath = cfgPath
-	state.Phase = "config_loaded"
-	if err := writeDaemonRuntimeState(state); err != nil {
-		return err
-	}
-
-	state.Phase = "starting_caddy"
-	if err := writeDaemonRuntimeState(state); err != nil {
-		return err
-	}
-	caddyProc, err := startManagedCaddy(cfgPath)
-	if err != nil {
-		return fail("caddy_start_error", err)
-	}
-	state.CaddyPID = caddyProc.PID()
-	state.Phase = "waiting_for_caddy"
-	if err := writeDaemonRuntimeState(state); err != nil {
-		return err
-	}
-
-	if err := waitForCaddyAdmin(cfg.Caddy.Admin, 15*time.Second); err != nil {
-		_ = terminateManagedProcess(caddyProc, 2*time.Second)
-		return fail("caddy_ready_error", err)
-	}
-	state.Phase = "applying_config"
-	if err := writeDaemonRuntimeState(state); err != nil {
-		return err
-	}
-	if err := d.service.ApplyConfig(cfgPath, cfg); err != nil {
-		_ = terminateManagedProcess(caddyProc, 2*time.Second)
-		return fail("apply_error", err)
-	}
-	state.Phase = "resuming_apps"
-	if err := writeDaemonRuntimeState(state); err != nil {
-		return err
-	}
-	resumeReport, err := d.resumePersistedApps()
-	if err != nil {
-		_ = terminateManagedProcess(caddyProc, 2*time.Second)
-		return fail("resume_error", err)
-	}
-	state.Ready = true
-	state.LastError = ""
-	state.Phase = "ready"
-	if len(resumeReport.FailedApps) > 0 {
-		state.Phase = "ready_degraded"
-		state.LastError = strings.Join(resumeReport.FailedApps, "; ")
-	}
-	if err := writeDaemonRuntimeState(state); err != nil {
 		return err
 	}
 
@@ -698,7 +647,7 @@ func (d *backgroundDaemon) Run(ctx context.Context) error {
 		state.Phase = "stopping"
 		state.LastError = ""
 		_ = writeDaemonRuntimeState(state)
-		if err := d.shutdown(caddyProc); err != nil {
+		if err := d.shutdown(ctx, caddyProc); err != nil {
 			return fail("shutdown_error", err)
 		}
 		_ = os.Remove(serviceStatePath)
@@ -713,7 +662,66 @@ func (d *backgroundDaemon) Run(ctx context.Context) error {
 	}
 }
 
-func (d *backgroundDaemon) resumePersistedApps() (daemonResumeReport, error) {
+func (d *backgroundDaemon) startRuntime(ctx context.Context, state *daemonRuntimeState, fail func(string, error) error) (daemonProcess, error) {
+	cfgPath, cfg, err := d.service.LoadOrCreateDefaultConfig()
+	if err != nil {
+		return nil, fail("config_error", err)
+	}
+	state.ConfigPath = cfgPath
+	state.Phase = "config_loaded"
+	if err := writeDaemonRuntimeState(*state); err != nil {
+		return nil, err
+	}
+
+	state.Phase = "starting_caddy"
+	if err := writeDaemonRuntimeState(*state); err != nil {
+		return nil, err
+	}
+	caddyProc, err := startManagedCaddy(cfgPath)
+	if err != nil {
+		return nil, fail("caddy_start_error", err)
+	}
+	state.CaddyPID = caddyProc.PID()
+	state.Phase = "waiting_for_caddy"
+	if err := writeDaemonRuntimeState(*state); err != nil {
+		return nil, err
+	}
+
+	if err := waitForCaddyAdmin(cfg.Caddy.Admin, 15*time.Second); err != nil {
+		_ = terminateManagedProcess(caddyProc, 2*time.Second)
+		return nil, fail("caddy_ready_error", err)
+	}
+	state.Phase = "applying_config"
+	if err := writeDaemonRuntimeState(*state); err != nil {
+		return nil, err
+	}
+	if err := d.service.ApplyConfig(cfgPath, cfg); err != nil {
+		_ = terminateManagedProcess(caddyProc, 2*time.Second)
+		return nil, fail("apply_error", err)
+	}
+	state.Phase = "resuming_apps"
+	if err := writeDaemonRuntimeState(*state); err != nil {
+		return nil, err
+	}
+	resumeReport, err := d.resumePersistedApps(ctx)
+	if err != nil {
+		_ = terminateManagedProcess(caddyProc, 2*time.Second)
+		return nil, fail("resume_error", err)
+	}
+	state.Ready = true
+	state.LastError = ""
+	state.Phase = "ready"
+	if len(resumeReport.FailedApps) > 0 {
+		state.Phase = "ready_degraded"
+		state.LastError = strings.Join(resumeReport.FailedApps, "; ")
+	}
+	if err := writeDaemonRuntimeState(*state); err != nil {
+		return nil, err
+	}
+	return caddyProc, nil
+}
+
+func (d *backgroundDaemon) resumePersistedApps(ctx context.Context) (daemonResumeReport, error) {
 	cfgPath, cfg, err := d.service.LoadOrCreateDefaultConfig()
 	if err != nil {
 		return daemonResumeReport{}, err
@@ -725,7 +733,7 @@ func (d *backgroundDaemon) resumePersistedApps() (daemonResumeReport, error) {
 			continue
 		}
 		report.ActiveApps++
-		if _, err := d.service.EnsureAppRuntime(cfg, a.Name); err != nil {
+		if _, err := d.service.EnsureAppRuntimeContext(ctx, cfg, a.Name); err != nil {
 			report.FailedApps = append(report.FailedApps, fmt.Sprintf("%s: %v", a.Name, err))
 			continue
 		}
@@ -738,7 +746,7 @@ func (d *backgroundDaemon) resumePersistedApps() (daemonResumeReport, error) {
 	return report, d.service.SaveConfigAt(cfgPath, cfg)
 }
 
-func (d *backgroundDaemon) shutdown(caddyProc daemonProcess) error {
+func (d *backgroundDaemon) shutdown(ctx context.Context, caddyProc daemonProcess) error {
 	cfgPath, cfg, err := d.service.LoadOrCreateDefaultConfig()
 	if err != nil {
 		return err
@@ -748,7 +756,7 @@ func (d *backgroundDaemon) shutdown(caddyProc daemonProcess) error {
 		if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) == "" {
 			continue
 		}
-		if _, err := d.service.StopAppRuntime(cfg, a.Name); err != nil {
+		if _, err := d.service.StopAppRuntimeContext(ctx, cfg, a.Name); err != nil {
 			return err
 		}
 		changed = true
@@ -834,10 +842,10 @@ func SaveServiceEnvValues(path string, updates map[string]string) error {
 	if len(updates) == 0 {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	switch {
 	case err == nil:
 	case os.IsNotExist(err):
@@ -884,35 +892,39 @@ func SaveServiceEnvValues(path string, updates map[string]string) error {
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	uid, gid, hasOwner := sudoOwner()
+	if !hasOwner {
+		uid, gid = -1, -1
+	}
+	if err := safeio.AtomicWriteFileOwned(path, []byte(content), 0o600, uid, gid); err != nil {
 		return err
 	}
-	fixSudoOwnership(path)
 	return nil
 }
 
-func startPreparedService() (LaunchdServiceStatus, error) {
+func startPreparedService() error {
 	if err := unloadInstalledServiceDefinition(); err != nil {
-		return LaunchdServiceStatus{}, err
+		return err
 	}
 	_, err := launchctlRun("enable", launchdServiceTarget())
 	if err != nil && !isLaunchctlNoop(err) {
-		return LaunchdServiceStatus{}, err
+		return err
 	}
 	if err := prepareServiceLogFiles(); err != nil {
-		return LaunchdServiceStatus{}, err
+		return err
 	}
 	_, err = launchctlRun("bootstrap", launchdServiceDomain, launchdPlistPath)
 	if err != nil && !isLaunchctlAlreadyLoaded(err) {
-		return LaunchdServiceStatus{}, err
+		return err
 	}
 	if _, err := launchctlRun("kickstart", "-kp", launchdServiceTarget()); err != nil {
-		return LaunchdServiceStatus{}, err
+		return err
 	}
 	if err := waitForServiceReady(serviceReadyTimeout); err != nil {
-		return LaunchdServiceStatus{}, err
+		return err
 	}
-	return ServiceStatusInfo()
+	_, err = ServiceStatusInfo()
+	return err
 }
 
 func syncLaunchdPlist() (ServiceEnvironmentReport, error) {
@@ -931,13 +943,13 @@ func syncLaunchdPlist() (ServiceEnvironmentReport, error) {
 	if err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(launchdPlistPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(launchdPlistPath), 0o750); err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
-	if err := os.MkdirAll(launchdRuntimeDir, 0o755); err != nil {
+	if err := os.MkdirAll(launchdRuntimeDir, 0o750); err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
-	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+	if err := os.MkdirAll(launchdLogDir, 0o750); err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
 	plist, err := renderLaunchdPlist(launchdPlistSpec{
@@ -950,7 +962,7 @@ func syncLaunchdPlist() (ServiceEnvironmentReport, error) {
 	if err != nil {
 		return ServiceEnvironmentReport{}, err
 	}
-	if err := os.WriteFile(launchdPlistPath, plist, 0o644); err != nil {
+	if err := os.WriteFile(launchdPlistPath, plist, 0o644); err != nil { // #nosec G306 -- launchd plists conventionally need to be readable by launchd.
 		return ServiceEnvironmentReport{}, fmt.Errorf("write launchd plist: %w", err)
 	}
 	return report, nil
@@ -1040,14 +1052,14 @@ func serviceEnvPath(configPath string) string {
 
 func loadServiceEnvFile(path string) (map[string]string, error) {
 	out := map[string]string{}
-	f, err := os.Open(path)
+	f, err := safeio.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out, nil
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1098,11 +1110,11 @@ func ensureServiceEnvTemplate(report *ServiceEnvironmentReport) error {
 	if report == nil || len(report.MissingEnvVars) == 0 {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(report.EnvFilePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(report.EnvFilePath), 0o750); err != nil {
 		return err
 	}
 
-	existing, err := os.ReadFile(report.EnvFilePath)
+	existing, err := safeio.ReadFile(report.EnvFilePath)
 	created := false
 	switch {
 	case err == nil:
@@ -1157,11 +1169,11 @@ func defaultServiceHome() string {
 }
 
 func prepareServiceLogFiles() error {
-	if err := os.MkdirAll(launchdLogDir, 0o755); err != nil {
+	if err := os.MkdirAll(launchdLogDir, 0o750); err != nil {
 		return err
 	}
 	for _, path := range []string{serviceStdoutPath, serviceStderrPath} {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		f, err := safeio.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err
 		}
@@ -1173,7 +1185,7 @@ func prepareServiceLogFiles() error {
 }
 
 func readDaemonRuntimeState() (daemonRuntimeState, error) {
-	b, err := os.ReadFile(serviceStatePath)
+	b, err := safeio.ReadFile(serviceStatePath)
 	if err != nil {
 		return daemonRuntimeState{}, err
 	}
@@ -1185,25 +1197,39 @@ func readDaemonRuntimeState() (daemonRuntimeState, error) {
 }
 
 func writeDaemonRuntimeState(st daemonRuntimeState) error {
-	if err := os.MkdirAll(launchdRuntimeDir, 0o755); err != nil {
+	if err := os.MkdirAll(launchdRuntimeDir, 0o750); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(serviceStatePath, b, 0o644)
+	return os.WriteFile(serviceStatePath, b, 0o600)
+}
+
+func flockFD(f *os.File) (int, error) {
+	fd := f.Fd()
+	maxInt := int(^uint(0) >> 1)
+	if fd > uintptr(maxInt) {
+		return 0, fmt.Errorf("file descriptor %d exceeds int range", fd)
+	}
+	return int(fd), nil // #nosec G115 -- range is checked immediately above before converting for syscall.Flock.
 }
 
 func acquireDaemonLock(path string) (*daemonLock, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := safeio.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	lockFD, err := flockFD(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := syscall.Flock(lockFD, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		return nil, errors.New("switchd background daemon is already running")
 	}
@@ -1218,7 +1244,9 @@ func (l *daemonLock) close() {
 	if l == nil || l.file == nil {
 		return
 	}
-	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	if lockFD, err := flockFD(l.file); err == nil {
+		_ = syscall.Flock(lockFD, syscall.LOCK_UN)
+	}
 	name := l.file.Name()
 	_ = l.file.Close()
 	_ = os.Remove(name)
@@ -1271,7 +1299,7 @@ func isProcessGone(err error) bool {
 }
 
 func defaultStartBackgroundCommand(name string, args ...string) (daemonProcess, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...) // #nosec G204 -- command is selected from switchd-managed daemon startup.
 	cmd.Env = backgroundCommandEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1305,7 +1333,7 @@ func defaultWaitForCaddyAdmin(adminBase string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	url := strings.TrimRight(strings.TrimSpace(adminBase), "/") + "/config/"
 	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest("GET", url, nil)
+		req, _ := http.NewRequestWithContext(context.Background(), "GET", url, nil)
 		resp, err := client.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
@@ -1319,7 +1347,7 @@ func defaultWaitForCaddyAdmin(adminBase string, timeout time.Duration) error {
 }
 
 func defaultLaunchctlRun(args ...string) (string, error) {
-	cmd := exec.Command("launchctl", args...)
+	cmd := exec.CommandContext(context.Background(), "launchctl", args...) // #nosec G204 -- launchctl arguments are fixed by service management calls.
 	out, err := cmd.CombinedOutput()
 	msg := strings.TrimSpace(string(out))
 	if err != nil {

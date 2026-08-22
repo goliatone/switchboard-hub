@@ -155,7 +155,11 @@ func tunnelProviderConfig(c *config.Config, providerName string) tunnel.Provider
 }
 
 func initProviderWithConfig(pr tunnel.Provider, c *config.Config, providerName string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return initProviderWithConfigContext(context.Background(), pr, c, providerName, timeout)
+}
+
+func initProviderWithConfigContext(parent context.Context, pr tunnel.Provider, c *config.Config, providerName string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	return pr.Init(ctx, tunnelProviderConfig(c, providerName))
 }
@@ -276,7 +280,7 @@ func resolveExposePublicHost(c *config.Config, providerName, appName, rawHost st
 
 func defaultRunCloudflaredTunnelLogin() error {
 	diag.LogCommand("cloudflared", "tunnel", "login")
-	cmd := exec.Command("cloudflared", "tunnel", "login")
+	cmd := exec.CommandContext(context.Background(), "cloudflared", "tunnel", "login")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -389,8 +393,8 @@ func (s *Service) appTunnelHealthStatusFromConfig(c *config.Config) ([]AppTunnel
 			out = append(out, h)
 			continue
 		}
-		if err := initProviderWithConfig(pr, c, h.Provider, 8*time.Second); err != nil {
-			h.Err = err.Error()
+		if initErr := initProviderWithConfig(pr, c, h.Provider, 8*time.Second); initErr != nil {
+			h.Err = initErr.Error()
 			out = append(out, h)
 			continue
 		}
@@ -443,7 +447,7 @@ func isIdempotentStopError(err error) bool {
 
 func actionableProviderResolveError(providerName string, err error) error {
 	available := providerRegistryFactory().Providers()
-	return fmt.Errorf("provider %q is unavailable: %v (available providers: %s)", providerName, err, strings.Join(available, ", "))
+	return fmt.Errorf("provider %q is unavailable (available providers: %s): %w", providerName, strings.Join(available, ", "), err)
 }
 
 func sessionSummary(pid int, started string) string {

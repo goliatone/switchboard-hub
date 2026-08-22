@@ -256,26 +256,29 @@ func (s *Service) TunnelInitWithOptions(providerName string, opts TunnelInitOpti
 		return pr.Init(ctx, tunnelProviderConfig(c, providerName))
 	}
 	if err := runInit(); err != nil {
-		if shouldAttemptCloudflareSetup(c, providerName, opts, err) {
-			if opts.NonInteractive {
-				return fmt.Errorf("%w (setup skipped: --non-interactive enabled)", err)
-			}
-			if !s.stdioIsInteractive() {
-				return fmt.Errorf("%w (setup skipped: interactive terminal required)", err)
-			}
-			if loginErr := s.runCloudflareTunnelLogin(); loginErr != nil {
-				return loginErr
-			}
-			if err := runInit(); err != nil {
-				return err
-			}
-		} else {
+		if err := s.retryCloudflareInit(c, providerName, opts, err, runInit); err != nil {
 			return err
 		}
 	}
 
 	enableProvider(c, providerName)
 	return s.store.Save(p, c)
+}
+
+func (s *Service) retryCloudflareInit(c *config.Config, providerName string, opts TunnelInitOptions, initErr error, runInit func() error) error {
+	if !shouldAttemptCloudflareSetup(c, providerName, opts, initErr) {
+		return initErr
+	}
+	if opts.NonInteractive {
+		return fmt.Errorf("%w (setup skipped: --non-interactive enabled)", initErr)
+	}
+	if !s.stdioIsInteractive() {
+		return fmt.Errorf("%w (setup skipped: interactive terminal required)", initErr)
+	}
+	if err := s.runCloudflareTunnelLogin(); err != nil {
+		return err
+	}
+	return runInit()
 }
 
 func (s *Service) TunnelStatus(providerName string) ([]TunnelProviderStatus, error) {
@@ -420,6 +423,10 @@ func (s *Service) EnsurePublicEndpoint(c *config.Config, name, providerName, pub
 }
 
 func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, error) {
+	return s.EnsureAppRuntimeContext(context.Background(), c, name)
+}
+
+func (s *Service) EnsureAppRuntimeContext(ctx context.Context, c *config.Config, name string) (config.App, error) {
 	if c == nil {
 		return config.App{}, fmt.Errorf("config is nil")
 	}
@@ -431,22 +438,22 @@ func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, e
 	if strings.TrimSpace(a.PublicEndpoint.Provider) == "" || strings.TrimSpace(a.PublicEndpoint.EndpointID) == "" {
 		return a, nil
 	}
-	if refreshResolvedDialHost(&c.Apps[idx]) {
+	if refreshResolvedDialHostContext(ctx, &c.Apps[idx]) {
 		a = c.Apps[idx]
 	}
 	pr, err := s.providerRegistry.Resolve(a.PublicEndpoint.Provider)
 	if err != nil {
 		return config.App{}, actionableProviderResolveError(a.PublicEndpoint.Provider, err)
 	}
-	if err := initProviderWithConfig(pr, c, a.PublicEndpoint.Provider, 20*time.Second); err != nil {
+	if err := initProviderWithConfigContext(ctx, pr, c, a.PublicEndpoint.Provider, 20*time.Second); err != nil {
 		return config.App{}, err
 	}
 	if strings.TrimSpace(a.PublicEndpoint.ActiveSessionID) != "" {
 		if a.PublicEndpoint.ActiveSessionPID > 0 && processAlive(a.PublicEndpoint.ActiveSessionPID) {
 			return c.Apps[idx], nil
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		status, statusErr := pr.Status(ctx, a.PublicEndpoint.EndpointID)
+		statusCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		status, statusErr := pr.Status(statusCtx, a.PublicEndpoint.EndpointID)
 		cancel()
 		if statusErr == nil && status.Ready {
 			if strings.TrimSpace(status.SessionID) != "" {
@@ -454,8 +461,8 @@ func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, e
 			}
 			return c.Apps[idx], nil
 		}
-		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-		stopErr := pr.Stop(ctx, a.PublicEndpoint.ActiveSessionID)
+		stopCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		stopErr := pr.Stop(stopCtx, a.PublicEndpoint.ActiveSessionID)
 		cancel()
 		if stopErr != nil && !isIdempotentStopError(stopErr) {
 			return config.App{}, stopErr
@@ -465,16 +472,16 @@ func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, e
 		c.Apps[idx].PublicEndpoint.ActiveSessionStarted = ""
 		a = c.Apps[idx]
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	startCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	session, err := pr.Start(ctx, tunnel.StartRequest{
+	session, err := pr.Start(startCtx, tunnel.StartRequest{
 		Endpoint: tunnel.Endpoint{
 			ID:       a.PublicEndpoint.EndpointID,
 			Provider: a.PublicEndpoint.Provider,
 			Host:     a.PublicEndpoint.Host,
 			Name:     a.Name,
 		},
-		LocalURL: LocalURLForApp(a, true),
+		LocalURL: LocalURLForAppContext(ctx, a, true),
 	})
 	if err != nil {
 		return config.App{}, err
@@ -487,6 +494,10 @@ func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, e
 }
 
 func (s *Service) StopAppRuntime(c *config.Config, name string) (config.App, error) {
+	return s.StopAppRuntimeContext(context.Background(), c, name)
+}
+
+func (s *Service) StopAppRuntimeContext(ctx context.Context, c *config.Config, name string) (config.App, error) {
 	if c == nil {
 		return config.App{}, fmt.Errorf("config is nil")
 	}
@@ -507,9 +518,9 @@ func (s *Service) StopAppRuntime(c *config.Config, name string) (config.App, err
 	if err != nil {
 		return config.App{}, actionableProviderResolveError(providerName, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	stopCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if err := pr.Stop(ctx, sessionID); err != nil {
+	if err := pr.Stop(stopCtx, sessionID); err != nil {
 		if !isIdempotentStopError(err) {
 			return config.App{}, err
 		}
@@ -540,7 +551,7 @@ func applyConfig(path string, c *config.Config) error {
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	req, _ := http.NewRequest("GET", strings.TrimRight(c.Caddy.Admin, "/")+"/config/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", strings.TrimRight(c.Caddy.Admin, "/")+"/config/", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("caddy admin not reachable at %s (is Caddy running?): %w", c.Caddy.Admin, err)
@@ -557,12 +568,12 @@ func applyConfig(path string, c *config.Config) error {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	fixSudoOwnership(dir)
 	last := filepath.Join(dir, "last-applied.json")
-	if err := os.WriteFile(last, cfgJSON, 0o644); err == nil {
+	if err := os.WriteFile(last, cfgJSON, 0o600); err == nil {
 		fixSudoOwnership(last)
 	}
 

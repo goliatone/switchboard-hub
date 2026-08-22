@@ -264,7 +264,7 @@ func TestBackgroundDaemonResumePersistedApps(t *testing.T) {
 		configPath: cfgPath,
 		now:        time.Now,
 	}
-	report, err := d.resumePersistedApps()
+	report, err := d.resumePersistedApps(context.Background())
 	if err != nil {
 		t.Fatalf("resumePersistedApps returned error: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestBackgroundDaemonResumePersistedAppsDegradesOnProviderError(t *testing.T
 		configPath: cfgPath,
 		now:        time.Now,
 	}
-	report, err := d.resumePersistedApps()
+	report, err := d.resumePersistedApps(context.Background())
 	if err != nil {
 		t.Fatalf("resumePersistedApps returned unexpected error: %v", err)
 	}
@@ -788,7 +788,7 @@ func TestAppUpPersistsRuntimeAfterStaleCloudflareStop(t *testing.T) {
 }
 
 func TestExecBackgroundProcessWaitIsReplayable(t *testing.T) {
-	cmd := exec.Command("sh", "-c", "exit 0")
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", "exit 0")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestBackgroundDaemonShutdownStopsActiveApps(t *testing.T) {
 		now:        time.Now,
 	}
 	proc := &testDaemonProcess{pid: 5151, done: make(chan struct{})}
-	if err := d.shutdown(proc); err != nil {
+	if err := d.shutdown(context.Background(), proc); err != nil {
 		t.Fatalf("shutdown returned error: %v", err)
 	}
 
@@ -1569,9 +1569,12 @@ func appendFile(path, contents string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	_, err = f.WriteString(contents)
-	return err
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 func (p *testDaemonProcess) Wait() error {

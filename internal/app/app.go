@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/goliatone/switchboard-hub/internal/caddy"
 	"github.com/goliatone/switchboard-hub/internal/config"
 	"github.com/goliatone/switchboard-hub/internal/dns"
+	"github.com/goliatone/switchboard-hub/internal/safeio"
 	"github.com/goliatone/switchboard-hub/internal/sys"
 )
 
@@ -87,7 +89,7 @@ func ensureConfigDir() (string, error) {
 		return "", err
 	}
 	dir := filepath.Dir(p)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", err
 	}
 	fixSudoOwnership(dir)
@@ -108,48 +110,7 @@ func Init(tld, dnsIP string, enableTLS bool, tlsMode string, tlsCertFile string,
 	if err != nil {
 		return err
 	}
-	created := false
-	if _, statErr := os.Stat(p); statErr != nil {
-		if !enableTLS && (strings.TrimSpace(tlsMode) != "" || strings.TrimSpace(tlsCertFile) != "" || strings.TrimSpace(tlsKeyFile) != "") {
-			return errors.New("tls flags require --tls=true")
-		}
-		if normalizeTLSMode(tlsMode) == "internal" && (strings.TrimSpace(tlsCertFile) != "" || strings.TrimSpace(tlsKeyFile) != "") {
-			return errors.New("tls-cert-file/tls-key-file can only be used with --tls-mode file")
-		}
-		c := config.Default(tld, dnsIP)
-		baseDir := filepath.Dir(p)
-		c.Caddy.TLS.Enabled = enableTLS
-		c.Caddy.TLS.Mode = normalizeTLSMode(tlsMode)
-		if c.Caddy.TLS.Mode == "file" {
-			c.Caddy.TLS.CertFile, err = resolvePathInput(tlsCertFile, baseDir)
-			if err != nil {
-				return err
-			}
-			c.Caddy.TLS.KeyFile, err = resolvePathInput(tlsKeyFile, baseDir)
-			if err != nil {
-				return err
-			}
-		} else {
-			c.Caddy.TLS.CertFile = ""
-			c.Caddy.TLS.KeyFile = ""
-		}
-		if err := validateTLSConfig(c); err != nil {
-			return err
-		}
-		if err := config.Save(p, c); err != nil {
-			return err
-		}
-		fmt.Println("wrote:", p)
-		created = true
-	} else {
-		if !enableTLS || strings.TrimSpace(tlsMode) != "" || strings.TrimSpace(tlsCertFile) != "" || strings.TrimSpace(tlsKeyFile) != "" {
-			return errors.New("config already exists; init does not update TLS settings (use switchd tls mkcert or edit config.yaml)")
-		}
-		fixSudoOwnership(p)
-		fmt.Println("exists:", p)
-	}
-
-	c, err := config.Load(p)
+	c, created, err := loadOrCreateInitialConfig(p, tld, dnsIP, enableTLS, tlsMode, tlsCertFile, tlsKeyFile)
 	if err != nil {
 		return err
 	}
@@ -186,6 +147,70 @@ func Init(tld, dnsIP string, enableTLS bool, tlsMode string, tlsCertFile string,
 		}
 	}
 	return nil
+}
+
+func loadOrCreateInitialConfig(path, tld, dnsIP string, enableTLS bool, tlsMode, tlsCertFile, tlsKeyFile string) (*config.Config, bool, error) {
+	_, statErr := os.Stat(path)
+	switch {
+	case statErr == nil:
+		if !enableTLS || hasTLSInputs(tlsMode, tlsCertFile, tlsKeyFile) {
+			return nil, false, errors.New("config already exists; init does not update TLS settings (use switchd tls mkcert or edit config.yaml)")
+		}
+		fixSudoOwnership(path)
+		fmt.Println("exists:", path)
+		c, err := config.Load(path)
+		return c, false, err
+	case !os.IsNotExist(statErr):
+		return nil, false, fmt.Errorf("stat config %q: %w", path, statErr)
+	}
+
+	c, err := newInitialConfig(path, tld, dnsIP, enableTLS, tlsMode, tlsCertFile, tlsKeyFile)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := config.Save(path, c); err != nil {
+		return nil, false, err
+	}
+	fmt.Println("wrote:", path)
+	return c, true, nil
+}
+
+func newInitialConfig(path, tld, dnsIP string, enableTLS bool, tlsMode, tlsCertFile, tlsKeyFile string) (*config.Config, error) {
+	if !enableTLS && hasTLSInputs(tlsMode, tlsCertFile, tlsKeyFile) {
+		return nil, errors.New("tls flags require --tls=true")
+	}
+	mode := normalizeTLSMode(tlsMode)
+	if mode == "internal" && hasTLSInputs("", tlsCertFile, tlsKeyFile) {
+		return nil, errors.New("tls-cert-file/tls-key-file can only be used with --tls-mode file")
+	}
+	c := config.Default(tld, dnsIP)
+	c.Caddy.TLS.Enabled = enableTLS
+	c.Caddy.TLS.Mode = mode
+	if mode == "file" {
+		var err error
+		baseDir := filepath.Dir(path)
+		c.Caddy.TLS.CertFile, err = resolvePathInput(tlsCertFile, baseDir)
+		if err != nil {
+			return nil, err
+		}
+		c.Caddy.TLS.KeyFile, err = resolvePathInput(tlsKeyFile, baseDir)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := validateTLSConfig(c); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func hasTLSInputs(values ...string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func Uninstall() error {
@@ -337,7 +362,7 @@ func Apply() error {
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	req, _ := http.NewRequest("GET", strings.TrimRight(c.Caddy.Admin, "/")+"/config/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", strings.TrimRight(c.Caddy.Admin, "/")+"/config/", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("caddy admin not reachable at %s (is Caddy running?): %w", c.Caddy.Admin, err)
@@ -355,7 +380,7 @@ func Apply() error {
 
 	dir, _ := ensureConfigDir()
 	last := filepath.Join(dir, "last-applied.json")
-	if err := os.WriteFile(last, cfgJSON, 0o644); err == nil {
+	if err := os.WriteFile(last, cfgJSON, 0o600); err == nil {
 		fixSudoOwnership(last)
 	}
 
@@ -433,10 +458,10 @@ func TLSMkcert(certFile, keyFile string, install bool) error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(certOut), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(certOut), 0o750); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(keyOut), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(keyOut), 0o750); err != nil {
 		return err
 	}
 	fixSudoOwnership(filepath.Dir(certOut))
@@ -498,7 +523,7 @@ func ensureBootstrapCaddyfile(configPath string) (string, bool, error) {
 	dir := filepath.Dir(configPath)
 	bootstrap := filepath.Join(dir, "bootstrap.Caddyfile")
 	if _, err := os.Stat(bootstrap); err != nil {
-		_ = os.MkdirAll(dir, 0o755)
+		_ = os.MkdirAll(dir, 0o750)
 		if err := caddy.WriteBootstrapCaddyfile(bootstrap); err != nil {
 			return "", false, err
 		}
@@ -556,11 +581,11 @@ func validateTLSConfig(c *config.Config) error {
 		if _, err := os.Stat(keyFile); err != nil {
 			return fmt.Errorf("tls key file not accessible %q: %w", keyFile, err)
 		}
-		certPEM, err := os.ReadFile(certFile)
+		certPEM, err := safeio.ReadFile(certFile)
 		if err != nil {
 			return fmt.Errorf("read tls cert file %q: %w", certFile, err)
 		}
-		keyPEM, err := os.ReadFile(keyFile)
+		keyPEM, err := safeio.ReadFile(keyFile)
 		if err != nil {
 			return fmt.Errorf("read tls key file %q: %w", keyFile, err)
 		}

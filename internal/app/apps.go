@@ -3,7 +3,6 @@ package app
 import (
 	"errors"
 	"fmt"
-	"net"
 	"regexp"
 	"sort"
 	"strings"
@@ -246,18 +245,6 @@ func syncRoutesFromApps(c *config.Config) bool {
 		}
 	}
 	return changed
-}
-
-func dialHostFromRouteDial(dial string) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(dial))
-	if err != nil {
-		return ""
-	}
-	host, err = NormalizeDialHost(host)
-	if err != nil {
-		return ""
-	}
-	return host
 }
 
 func createAppDialHost(opts *CreateAppOptions) string {

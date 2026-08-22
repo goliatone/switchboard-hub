@@ -2,6 +2,7 @@ package sys
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,14 +11,14 @@ import (
 )
 
 func Run(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...) // #nosec G204 -- sys package intentionally wraps explicit command invocations.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
 func RunCapture(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...) // #nosec G204 -- sys package intentionally wraps explicit command invocations.
 	var out bytes.Buffer
 	var errb bytes.Buffer
 	cmd.Stdout = &out

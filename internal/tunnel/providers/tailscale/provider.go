@@ -280,14 +280,14 @@ func tunnelNameFrom(raw string) string {
 
 func runCommand(ctx context.Context, name string, args ...string) (string, error) {
 	diag.LogCommand(name, args...)
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- tailscale command and args are built by provider lifecycle code.
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
 		if s == "" {
 			return "", diag.SanitizeError(err)
 		}
-		return "", fmt.Errorf("%v: %s", diag.SanitizeError(err), diag.Redact(s))
+		return "", fmt.Errorf("%w: %s", diag.SanitizeError(err), diag.Redact(s))
 	}
 	return diag.Redact(s), nil
 }

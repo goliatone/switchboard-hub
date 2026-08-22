@@ -2,6 +2,7 @@ package caddy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -164,7 +165,7 @@ func LoadConfig(adminBase string, cfg []byte) error {
 	url := base + "/load"
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest("POST", url, bytes.NewReader(cfg))
+	req, err := http.NewRequestWithContext(context.Background(), "POST", url, bytes.NewReader(cfg))
 	if err != nil {
 		return err
 	}
@@ -173,7 +174,7 @@ func LoadConfig(adminBase string, cfg []byte) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -191,5 +192,5 @@ func WriteBootstrapCaddyfile(path string) error {
   respond "switchboard-hub bootstrap (run switchd apply)\n" 200
 }
 `
-	return os.WriteFile(path, []byte(caddyfile), 0o644)
+	return os.WriteFile(path, []byte(caddyfile), 0o600)
 }

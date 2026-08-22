@@ -107,26 +107,9 @@ func Up(service *app.Service, path string) (*Report, error) {
 		return planned, unsafeReportError(planned)
 	}
 
-	appOrRouteChanged := false
-	for _, svc := range resolved.Services {
-		status := findServiceStatus(planned, svc.Name)
-		if status != nil && status.Collision != "" {
-			continue
-		}
-		update := ensureManagedApp(cfg, resolved, svc, path)
-		if update.Changed {
-			appOrRouteChanged = true
-		}
-		if removeRouteIfUnused(cfg, update.PreviousHost) {
-			appOrRouteChanged = true
-		}
-		appIndex, _, err := managedAppForService(cfg, resolved.Stack.Name, svc.Name)
-		if err != nil {
-			return nil, err
-		}
-		if appIndex >= 0 && ensureRoute(cfg, cfg.Apps[appIndex], svc.LocalHost, svc.LocalPort) {
-			appOrRouteChanged = true
-		}
+	appOrRouteChanged, err := reconcileManagedApps(cfg, resolved, planned, path)
+	if err != nil {
+		return nil, err
 	}
 	if appOrRouteChanged {
 		if err := service.SaveConfigAt(configPath, cfg); err != nil {
@@ -137,21 +120,9 @@ func Up(service *app.Service, path string) (*Report, error) {
 		}
 	}
 
-	endpointChanged := false
-	for _, svc := range resolved.Services {
-		if !svc.Expose {
-			continue
-		}
-		status := findServiceStatus(planned, svc.Name)
-		if status != nil && status.Collision != "" {
-			continue
-		}
-		if needsExpose(status) {
-			if _, err := service.EnsurePublicEndpoint(cfg, svc.GeneratedAppName, svc.Provider, svc.PublicHost); err != nil {
-				return nil, err
-			}
-			endpointChanged = true
-		}
+	endpointChanged, err := reconcilePublicEndpoints(service, cfg, resolved, planned)
+	if err != nil {
+		return nil, err
 	}
 	if endpointChanged {
 		if err := service.SaveConfigAt(configPath, cfg); err != nil {
@@ -159,21 +130,9 @@ func Up(service *app.Service, path string) (*Report, error) {
 		}
 	}
 
-	sessionChanged := false
-	for _, svc := range resolved.Services {
-		if !svc.Up {
-			continue
-		}
-		status := findServiceStatus(planned, svc.Name)
-		if status != nil && status.Collision != "" {
-			continue
-		}
-		if needsStart(status) {
-			if _, err := service.EnsureAppRuntime(cfg, svc.GeneratedAppName); err != nil {
-				return nil, err
-			}
-			sessionChanged = true
-		}
+	sessionChanged, err := reconcileRuntimeSessions(service, cfg, resolved, planned)
+	if err != nil {
+		return nil, err
 	}
 	if sessionChanged {
 		if err := service.SaveConfigAt(configPath, cfg); err != nil {
@@ -182,6 +141,57 @@ func Up(service *app.Service, path string) (*Report, error) {
 	}
 
 	return mergeReportActions(planned, buildReport(resolved, cfg, path)), nil
+}
+
+func reconcileManagedApps(cfg *config.Config, resolved *ResolvedStack, planned *Report, stackFile string) (bool, error) {
+	changed := false
+	for _, svc := range resolved.Services {
+		status := findServiceStatus(planned, svc.Name)
+		if status != nil && status.Collision != "" {
+			continue
+		}
+		update := ensureManagedApp(cfg, resolved, svc, stackFile)
+		changed = changed || update.Changed
+		changed = removeRouteIfUnused(cfg, update.PreviousHost) || changed
+		appIndex, _, err := managedAppForService(cfg, resolved.Stack.Name, svc.Name)
+		if err != nil {
+			return false, err
+		}
+		if appIndex >= 0 {
+			changed = ensureRoute(cfg, cfg.Apps[appIndex], svc.LocalHost, svc.LocalPort) || changed
+		}
+	}
+	return changed, nil
+}
+
+func reconcilePublicEndpoints(service *app.Service, cfg *config.Config, resolved *ResolvedStack, planned *Report) (bool, error) {
+	changed := false
+	for _, svc := range resolved.Services {
+		status := findServiceStatus(planned, svc.Name)
+		if !svc.Expose || (status != nil && status.Collision != "") || !needsExpose(status) {
+			continue
+		}
+		if _, err := service.EnsurePublicEndpoint(cfg, svc.GeneratedAppName, svc.Provider, svc.PublicHost); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+func reconcileRuntimeSessions(service *app.Service, cfg *config.Config, resolved *ResolvedStack, planned *Report) (bool, error) {
+	changed := false
+	for _, svc := range resolved.Services {
+		status := findServiceStatus(planned, svc.Name)
+		if !svc.Up || (status != nil && status.Collision != "") || !needsStart(status) {
+			continue
+		}
+		if _, err := service.EnsureAppRuntime(cfg, svc.GeneratedAppName); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	return changed, nil
 }
 
 func Down(service *app.Service, path string) (*Report, error) {
@@ -472,37 +482,7 @@ func ensureManagedApp(cfg *config.Config, resolved *ResolvedStack, svc ResolvedS
 		metadataStackFile: stackFile,
 	}
 	if len(indexes) == 1 {
-		idx := indexes[0]
-		update := managedAppUpdate{
-			CurrentAppName: cfg.Apps[idx].Name,
-		}
-		if cfg.Apps[idx].LocalHost != svc.LocalHost {
-			update.PreviousHost = cfg.Apps[idx].LocalHost
-		}
-		if cfg.Apps[idx].Name != svc.GeneratedAppName {
-			cfg.Apps[idx].Name = svc.GeneratedAppName
-			update.Changed = true
-		}
-		if cfg.Apps[idx].LocalHost != svc.LocalHost {
-			cfg.Apps[idx].LocalHost = svc.LocalHost
-			update.Changed = true
-		}
-		if cfg.Apps[idx].LocalPort != svc.LocalPort {
-			cfg.Apps[idx].LocalPort = svc.LocalPort
-			update.Changed = true
-		}
-		if cfg.Apps[idx].Metadata == nil {
-			cfg.Apps[idx].Metadata = map[string]string{}
-		}
-		for k, v := range meta {
-			if cfg.Apps[idx].Metadata[k] != v {
-				cfg.Apps[idx].Metadata[k] = v
-				update.Changed = true
-			}
-		}
-		sort.Slice(cfg.Apps, func(i, j int) bool { return cfg.Apps[i].Name < cfg.Apps[j].Name })
-		update.CurrentAppName = svc.GeneratedAppName
-		return update
+		return updateManagedApp(cfg, indexes[0], svc, meta)
 	}
 
 	cfg.Apps = append(cfg.Apps, config.App{
@@ -516,6 +496,37 @@ func ensureManagedApp(cfg *config.Config, resolved *ResolvedStack, svc ResolvedS
 		Changed:        true,
 		CurrentAppName: svc.GeneratedAppName,
 	}
+}
+
+func updateManagedApp(cfg *config.Config, idx int, svc ResolvedService, meta map[string]string) managedAppUpdate {
+	update := managedAppUpdate{CurrentAppName: cfg.Apps[idx].Name}
+	if cfg.Apps[idx].LocalHost != svc.LocalHost {
+		update.PreviousHost = cfg.Apps[idx].LocalHost
+	}
+	if cfg.Apps[idx].Name != svc.GeneratedAppName {
+		cfg.Apps[idx].Name = svc.GeneratedAppName
+		update.Changed = true
+	}
+	if cfg.Apps[idx].LocalHost != svc.LocalHost {
+		cfg.Apps[idx].LocalHost = svc.LocalHost
+		update.Changed = true
+	}
+	if cfg.Apps[idx].LocalPort != svc.LocalPort {
+		cfg.Apps[idx].LocalPort = svc.LocalPort
+		update.Changed = true
+	}
+	if cfg.Apps[idx].Metadata == nil {
+		cfg.Apps[idx].Metadata = map[string]string{}
+	}
+	for k, v := range meta {
+		if cfg.Apps[idx].Metadata[k] != v {
+			cfg.Apps[idx].Metadata[k] = v
+			update.Changed = true
+		}
+	}
+	sort.Slice(cfg.Apps, func(i, j int) bool { return cfg.Apps[i].Name < cfg.Apps[j].Name })
+	update.CurrentAppName = svc.GeneratedAppName
+	return update
 }
 
 func findOrphans(resolved *ResolvedStack, cfg *config.Config) []ManagedOrphan {

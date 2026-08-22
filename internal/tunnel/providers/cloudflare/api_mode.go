@@ -23,7 +23,7 @@ const (
 	providerModeAPI = "api"
 
 	defaultCloudflareAPIBaseURL  = "https://api.cloudflare.com/client/v4"
-	defaultCloudflareAPITokenEnv = "SWITCHD_CF_API_TOKEN"
+	defaultCloudflareAPITokenEnv = "SWITCHD_CF_API_TOKEN" // #nosec G101 -- this is an environment variable name, not a token.
 )
 
 type providerRuntimeConfig struct {
@@ -591,7 +591,7 @@ func (c *cloudflareAPIClient) request(ctx context.Context, method, path string, 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/goliatone/switchboard-hub/internal/safeio"
 	"gopkg.in/yaml.v3"
 )
 
@@ -109,7 +110,7 @@ func Default(tld, dnsIP string) *Config {
 }
 
 func Load(path string) (*Config, error) {
-	b, err := os.ReadFile(path)
+	b, err := safeio.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
@@ -176,11 +177,11 @@ func Save(path string, c *Config) error {
 		return err
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	fixSudoOwnership(dir)
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	if err := os.WriteFile(path, b, 0o600); err != nil {
 		if os.IsPermission(err) && os.Geteuid() != 0 {
 			return fmt.Errorf("write config %s: %w (hint: sudo chown -R \"$USER\":staff %s)", path, err, dir)
 		}
@@ -360,11 +361,6 @@ func parseDialTarget(dial string) (string, int, bool) {
 		return "", 0, false
 	}
 	return normalizeDialHost(host), p, true
-}
-
-func parseDialPort(dial string) (int, bool) {
-	_, port, ok := parseDialTarget(dial)
-	return port, ok
 }
 
 func deriveAppName(host, tld string) string {

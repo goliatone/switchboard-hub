@@ -10,6 +10,24 @@ import (
 var hostnameLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 
 func (s *Stack) Validate() error {
+	if err := validateStackHeader(s); err != nil {
+		return err
+	}
+	state := newStackValidationState()
+	for i, svc := range s.Services {
+		if err := state.validateService(s.Name, i, svc); err != nil {
+			return err
+		}
+	}
+	for key := range s.Outputs {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("outputs contains an empty key")
+		}
+	}
+	return nil
+}
+
+func validateStackHeader(s *Stack) error {
 	if s == nil {
 		return fmt.Errorf("stack is nil")
 	}
@@ -28,68 +46,70 @@ func (s *Stack) Validate() error {
 	if len(s.Services) == 0 {
 		return fmt.Errorf("services must contain at least one service")
 	}
+	return nil
+}
 
-	seenNames := map[string]struct{}{}
-	seenGenerated := map[string]struct{}{}
-	seenLocalHosts := map[string]struct{}{}
-	seenPublicHosts := map[string]struct{}{}
-	for i, svc := range s.Services {
-		if strings.TrimSpace(svc.Name) == "" {
-			return fmt.Errorf("services[%d].name is required", i)
-		}
-		if normalizeNameSegment(svc.Name) == "" {
-			return fmt.Errorf("services[%d].name is invalid: %q", i, svc.Name)
-		}
+type stackValidationState struct {
+	names       map[string]struct{}
+	generated   map[string]struct{}
+	localHosts  map[string]struct{}
+	publicHosts map[string]struct{}
+}
 
-		nameKey := normalizeLookupKey(svc.Name)
-		if _, ok := seenNames[nameKey]; ok {
-			return fmt.Errorf("duplicate service name %q", svc.Name)
-		}
-		seenNames[nameKey] = struct{}{}
-
-		appName := GeneratedAppName(s.Name, svc.Name)
-		if appName == "" {
-			return fmt.Errorf("generated app name is invalid for service %q", svc.Name)
-		}
-		if len(appName) > 63 {
-			return fmt.Errorf("generated app name %q is too long", appName)
-		}
-		if _, ok := seenGenerated[appName]; ok {
-			return fmt.Errorf("generated app name collision for service %q (%s)", svc.Name, appName)
-		}
-		seenGenerated[appName] = struct{}{}
-
-		if err := validatePort(svc.LocalPort); err != nil {
-			return fmt.Errorf("services[%d].local_port: %w", i, err)
-		}
-		if strings.TrimSpace(svc.LocalHost) != "" {
-			host, err := normalizeHostname(svc.LocalHost)
-			if err != nil {
-				return fmt.Errorf("services[%d].local_host: %w", i, err)
-			}
-			if _, ok := seenLocalHosts[host]; ok {
-				return fmt.Errorf("duplicate local_host %q", host)
-			}
-			seenLocalHosts[host] = struct{}{}
-		}
-		if strings.TrimSpace(svc.PublicHost) != "" {
-			host, err := normalizeHostname(svc.PublicHost)
-			if err != nil {
-				return fmt.Errorf("services[%d].public_host: %w", i, err)
-			}
-			if _, ok := seenPublicHosts[host]; ok {
-				return fmt.Errorf("duplicate public_host %q", host)
-			}
-			seenPublicHosts[host] = struct{}{}
-		}
+func newStackValidationState() *stackValidationState {
+	return &stackValidationState{
+		names:       map[string]struct{}{},
+		generated:   map[string]struct{}{},
+		localHosts:  map[string]struct{}{},
+		publicHosts: map[string]struct{}{},
 	}
+}
 
-	for key := range s.Outputs {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("outputs contains an empty key")
-		}
+func (v *stackValidationState) validateService(stackName string, index int, svc Service) error {
+	if strings.TrimSpace(svc.Name) == "" {
+		return fmt.Errorf("services[%d].name is required", index)
 	}
+	if normalizeNameSegment(svc.Name) == "" {
+		return fmt.Errorf("services[%d].name is invalid: %q", index, svc.Name)
+	}
+	nameKey := normalizeLookupKey(svc.Name)
+	if _, ok := v.names[nameKey]; ok {
+		return fmt.Errorf("duplicate service name %q", svc.Name)
+	}
+	v.names[nameKey] = struct{}{}
 
+	appName := GeneratedAppName(stackName, svc.Name)
+	if appName == "" {
+		return fmt.Errorf("generated app name is invalid for service %q", svc.Name)
+	}
+	if len(appName) > 63 {
+		return fmt.Errorf("generated app name %q is too long", appName)
+	}
+	if _, ok := v.generated[appName]; ok {
+		return fmt.Errorf("generated app name collision for service %q (%s)", svc.Name, appName)
+	}
+	v.generated[appName] = struct{}{}
+	if err := validatePort(svc.LocalPort); err != nil {
+		return fmt.Errorf("services[%d].local_port: %w", index, err)
+	}
+	if err := validateUniqueOptionalHost(svc.LocalHost, "local_host", index, v.localHosts); err != nil {
+		return err
+	}
+	return validateUniqueOptionalHost(svc.PublicHost, "public_host", index, v.publicHosts)
+}
+
+func validateUniqueOptionalHost(raw, field string, index int, seen map[string]struct{}) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	host, err := normalizeHostname(raw)
+	if err != nil {
+		return fmt.Errorf("services[%d].%s: %w", index, field, err)
+	}
+	if _, ok := seen[host]; ok {
+		return fmt.Errorf("duplicate %s %q", field, host)
+	}
+	seen[host] = struct{}{}
 	return nil
 }
 

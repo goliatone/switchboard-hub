@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/goliatone/switchboard-hub/internal/config"
+	"github.com/goliatone/switchboard-hub/internal/safeio"
 	"github.com/goliatone/switchboard-hub/internal/sys"
 )
 
@@ -110,7 +111,10 @@ func buildManagedBlock(tld, ip string) string {
 }
 
 func upsertManagedBlock(path string, block string) error {
-	orig, _ := os.ReadFile(path)
+	orig, err := safeio.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	s := string(orig)
 
 	if strings.Contains(s, managedBegin) && strings.Contains(s, managedEnd) {
@@ -121,7 +125,7 @@ func upsertManagedBlock(path string, block string) error {
 		}
 		end = end + len(managedEnd)
 		newS := s[:start] + strings.TrimRight(block, "\n") + s[end:]
-		return atomicWrite(path, []byte(newS), 0o644)
+		return atomicWrite(path, []byte(newS))
 	}
 
 	var buf bytes.Buffer
@@ -130,13 +134,16 @@ func upsertManagedBlock(path string, block string) error {
 		buf.WriteString("\n")
 	}
 	buf.WriteString(block)
-	return atomicWrite(path, buf.Bytes(), 0o644)
+	return atomicWrite(path, buf.Bytes())
 }
 
 func removeManagedBlock(path string) error {
-	orig, err := os.ReadFile(path)
+	orig, err := safeio.ReadFile(path)
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	s := string(orig)
 	if !strings.Contains(s, managedBegin) || !strings.Contains(s, managedEnd) {
@@ -151,16 +158,16 @@ func removeManagedBlock(path string) error {
 
 	newS := s[:start] + s[end:]
 	newS = strings.ReplaceAll(newS, "\n\n\n", "\n\n")
-	return atomicWrite(path, []byte(newS), 0o644)
+	return atomicWrite(path, []byte(newS))
 }
 
 func writeResolver(tld, ip string) error {
-	if err := os.MkdirAll(resolverDir, 0o755); err != nil {
+	if err := os.MkdirAll(resolverDir, 0o755); err != nil { // #nosec G301 -- /etc/resolver conventionally needs system-readable directory permissions.
 		return err
 	}
 	path := filepath.Join(resolverDir, tld)
 	content := fmt.Sprintf("nameserver %s\n", ip)
-	if err := atomicWrite(path, []byte(content), 0o644); err != nil {
+	if err := atomicWrite(path, []byte(content)); err != nil {
 		return err
 	}
 	fmt.Println("wrote:", path)
@@ -189,7 +196,7 @@ func installLaunchDaemon(ip string) error {
 </plist>
 `, launchdLabel, ip)
 
-	if err := atomicWrite(launchdPlistPath, []byte(plist), 0o644); err != nil {
+	if err := atomicWrite(launchdPlistPath, []byte(plist)); err != nil {
 		return err
 	}
 	fmt.Println("wrote:", launchdPlistPath)
@@ -200,10 +207,6 @@ func installLaunchDaemon(ip string) error {
 	return nil
 }
 
-func atomicWrite(path string, content []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+func atomicWrite(path string, content []byte) error {
+	return safeio.AtomicWriteFile(path, content, 0o644)
 }

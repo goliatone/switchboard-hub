@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"regexp"
@@ -54,10 +55,14 @@ func ConfiguredDialHost(a config.App) string {
 }
 
 func ResolveDialHost(a config.App) string {
+	return ResolveDialHostContext(context.Background(), a)
+}
+
+func ResolveDialHostContext(ctx context.Context, a config.App) string {
 	if host := normalizeDialHost(a.DialHost); host != "" {
 		return host
 	}
-	if host, ok := DetectReachableDialHost(a.LocalPort); ok {
+	if host, ok := DetectReachableDialHostContext(ctx, a.LocalPort); ok {
 		return host
 	}
 	if host := normalizeDialHost(a.ResolvedDialHost); host != "" {
@@ -71,9 +76,13 @@ func DialAddress(host string, port int) string {
 }
 
 func LocalURLForApp(a config.App, resolve bool) string {
+	return LocalURLForAppContext(context.Background(), a, resolve)
+}
+
+func LocalURLForAppContext(ctx context.Context, a config.App, resolve bool) string {
 	host := ConfiguredDialHost(a)
 	if resolve {
-		host = ResolveDialHost(a)
+		host = ResolveDialHostContext(ctx, a)
 	}
 	return "http://" + DialAddress(host, a.LocalPort)
 }
@@ -89,8 +98,12 @@ func normalizeDialHost(raw string) string {
 }
 
 func DetectReachableDialHost(port int) (string, bool) {
+	return DetectReachableDialHostContext(context.Background(), port)
+}
+
+func DetectReachableDialHostContext(ctx context.Context, port int) (string, bool) {
 	for _, candidate := range []string{defaultAppDialHost, "::1"} {
-		if dialHostReachable(candidate, port) {
+		if dialHostReachable(ctx, candidate, port) {
 			return candidate, true
 		}
 	}
@@ -98,6 +111,10 @@ func DetectReachableDialHost(port int) (string, bool) {
 }
 
 func refreshResolvedDialHost(a *config.App) bool {
+	return refreshResolvedDialHostContext(context.Background(), a)
+}
+
+func refreshResolvedDialHostContext(ctx context.Context, a *config.App) bool {
 	if a == nil {
 		return false
 	}
@@ -108,7 +125,7 @@ func refreshResolvedDialHost(a *config.App) bool {
 		}
 		return false
 	}
-	host, ok := DetectReachableDialHost(a.LocalPort)
+	host, ok := DetectReachableDialHostContext(ctx, a.LocalPort)
 	if !ok {
 		return false
 	}
@@ -120,8 +137,9 @@ func refreshResolvedDialHost(a *config.App) bool {
 	return true
 }
 
-func dialHostReachable(host string, port int) bool {
-	conn, err := net.DialTimeout("tcp", DialAddress(host, port), 200*time.Millisecond)
+func dialHostReachable(ctx context.Context, host string, port int) bool {
+	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
+	conn, err := dialer.DialContext(ctx, "tcp", DialAddress(host, port))
 	if err != nil {
 		return false
 	}

@@ -3,13 +3,13 @@ package stack
 import (
 	"bytes"
 	"fmt"
-	"os"
 
+	"github.com/goliatone/switchboard-hub/internal/safeio"
 	"gopkg.in/yaml.v3"
 )
 
 func LoadFile(path string) (*Stack, error) {
-	b, err := os.ReadFile(path)
+	b, err := safeio.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read stack file %s: %w", path, err)
 	}
