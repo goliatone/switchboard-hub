@@ -1,5 +1,30 @@
 # Changelog
 
+# [0.8.0](https://github.com/goliatone/switchboard-hub/compare/v0.7.0...v0.8.0) - (2026-08-22)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- Cloudflare session expired ([a78310f](https://github.com/goliatone/switchboard-hub/commit/a78310f93d3799450229a8c6a07be3f07c902d65))  - (goliatone)
+- Go releaser version ([448e94e](https://github.com/goliatone/switchboard-hub/commit/448e94e401ae2fe4a785dacdda0456a2e49380d1))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.8.0 ([17dd886](https://github.com/goliatone/switchboard-hub/commit/17dd88661f9390b9114e0c3912adc890fdf8d5a6))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Safe io and better lib ([0d53e79](https://github.com/goliatone/switchboard-hub/commit/0d53e79768e43f9eeed15e74f06e6f8cb36e3fcc))  - (goliatone)
+- Linting ([badc532](https://github.com/goliatone/switchboard-hub/commit/badc532d5bb42d086dfa205e572049df84522764))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.7.0 ([b7e2e21](https://github.com/goliatone/switchboard-hub/commit/b7e2e2133e87b9e3d9a4259b4b9f1a6660fe40d4))  - (goliatone)
+
+## <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Update linter setup ([22ac61f](https://github.com/goliatone/switchboard-hub/commit/22ac61f8d944fa7179a273c29b8965599267b514))  - (goliatone)
+- Update readme ([4425769](https://github.com/goliatone/switchboard-hub/commit/4425769f29d37a356621fcb4e297fba41b052c19))  - (goliatone)
+
 # [0.7.0](https://github.com/goliatone/switchboard-hub/compare/v0.6.0...v0.7.0) - (2026-03-30)
 
 ## <!-- 1 -->🐛 Bug Fixes
