@@ -131,6 +131,67 @@ func TestClientUsesExplicitConfigPathAndProviderInjection(t *testing.T) {
 	}
 }
 
+func TestClientOwnsIngressLifecycleEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	provider := newFakeProvider()
+	client := New(Options{ConfigPath: filepath.Join(dir, "config.yaml"), ProviderRegistry: fakeRegistry{provider: provider}, ApplyFunc: func(string, Config) error { return nil }})
+	cfg, err := client.LoadOrCreateDefaultConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Tunnel.DefaultProvider = "mock"
+	if err := client.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	owner := IngressOwnership{System: "ctx", ScopeID: "workspace-1"}
+	spec := IngressSpec{Name: "tracker-hooks", LocalPort: 8080, Provider: "mock", PublicHost: "hooks.example.com", CallbackPath: "/webhooks/trackers", Owner: owner, Metadata: map[string]string{"purpose": "tracker"}}
+	created, err := client.EnsureIngress(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("EnsureIngress: %v", err)
+	}
+	if created.CallbackURL != "https://hooks.example.com/webhooks/trackers" || created.Revision != 1 {
+		t.Fatalf("created ingress = %#v", created)
+	}
+	repeated, err := client.EnsureIngress(context.Background(), spec)
+	if err != nil || repeated.Revision != created.Revision {
+		t.Fatalf("idempotent ensure = %#v, err = %v", repeated, err)
+	}
+
+	wrongOwner := spec
+	wrongOwner.Owner.ScopeID = "workspace-2"
+	if _, err := client.EnsureIngress(context.Background(), wrongOwner); err == nil {
+		t.Fatal("ownership conflict was accepted")
+	}
+
+	started, err := client.StartIngress(context.Background(), IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &created.Revision})
+	if err != nil || started.State != IngressStateRunning || started.SessionID == "" {
+		t.Fatalf("StartIngress = %#v, err = %v", started, err)
+	}
+	stopped, err := client.StopIngress(context.Background(), IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &started.Revision})
+	if err != nil || stopped.State != IngressStateStopped || stopped.SessionID != "" {
+		t.Fatalf("StopIngress = %#v, err = %v", stopped, err)
+	}
+	if err := client.ReleaseIngress(context.Background(), IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &stopped.Revision}); err != nil {
+		t.Fatalf("ReleaseIngress: %v", err)
+	}
+	if len(provider.endpoints) != 0 {
+		t.Fatalf("remote endpoints remain: %#v", provider.endpoints)
+	}
+	items, err := client.ListIngress(context.Background(), &owner)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("ListIngress = %#v, err = %v", items, err)
+	}
+}
+
+func TestClientRejectsUnsafeIngressCallback(t *testing.T) {
+	client := New(Options{ConfigPath: filepath.Join(t.TempDir(), "config.yaml"), ProviderRegistry: fakeRegistry{provider: newFakeProvider()}, ApplyFunc: func(string, Config) error { return nil }})
+	_, err := client.EnsureIngress(context.Background(), IngressSpec{Name: "hooks", LocalPort: 8080, Provider: "mock", PublicHost: "hooks.example.com", CallbackPath: "https://attacker.example/hook", Owner: IngressOwnership{System: "ctx", ScopeID: "workspace-1"}})
+	if err == nil {
+		t.Fatal("absolute callback URL was accepted")
+	}
+}
+
 func TestClientStackFacade(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")

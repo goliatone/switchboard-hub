@@ -68,6 +68,54 @@ type CreateAppOptions struct {
 	DialHost string `json:"dial_host,omitempty" yaml:"dial_host,omitempty"`
 }
 
+type IngressState string
+
+const (
+	IngressStateConfigured IngressState = "configured"
+	IngressStateRunning    IngressState = "running"
+	IngressStateStopped    IngressState = "stopped"
+)
+
+type IngressOwnership struct {
+	System  string `json:"system" yaml:"system"`
+	ScopeID string `json:"scope_id" yaml:"scope_id"`
+}
+
+type IngressSpec struct {
+	Name             string            `json:"name" yaml:"name"`
+	LocalPort        int               `json:"local_port" yaml:"local_port"`
+	DialHost         string            `json:"dial_host,omitempty" yaml:"dial_host,omitempty"`
+	Provider         string            `json:"provider,omitempty" yaml:"provider,omitempty"`
+	PublicHost       string            `json:"public_host,omitempty" yaml:"public_host,omitempty"`
+	CallbackPath     string            `json:"callback_path" yaml:"callback_path"`
+	Owner            IngressOwnership  `json:"owner" yaml:"owner"`
+	ExpectedRevision *int64            `json:"expected_revision,omitempty" yaml:"expected_revision,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+type IngressRef struct {
+	Name             string           `json:"name" yaml:"name"`
+	Owner            IngressOwnership `json:"owner" yaml:"owner"`
+	ExpectedRevision *int64           `json:"expected_revision,omitempty" yaml:"expected_revision,omitempty"`
+}
+
+type Ingress struct {
+	Name         string            `json:"name"`
+	LocalHost    string            `json:"local_host"`
+	LocalPort    int               `json:"local_port"`
+	DialHost     string            `json:"dial_host,omitempty"`
+	Provider     string            `json:"provider"`
+	PublicHost   string            `json:"public_host"`
+	CallbackPath string            `json:"callback_path"`
+	CallbackURL  string            `json:"callback_url"`
+	EndpointID   string            `json:"endpoint_id"`
+	SessionID    string            `json:"session_id,omitempty"`
+	Owner        IngressOwnership  `json:"owner"`
+	State        IngressState      `json:"state"`
+	Revision     int64             `json:"revision"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
 type AppTunnelHealth struct {
 	AppName      string `json:"app_name"`
 	Provider     string `json:"provider"`

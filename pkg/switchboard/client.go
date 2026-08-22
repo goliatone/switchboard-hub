@@ -2,6 +2,7 @@ package switchboard
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
@@ -102,6 +103,60 @@ func (c *Client) AppUp(name string) error {
 
 func (c *Client) AppDown(name string) error {
 	return c.service.AppDown(name)
+}
+
+func (c *Client) EnsureIngress(ctx context.Context, spec IngressSpec) (Ingress, error) {
+	result, err := c.service.EnsureIngress(ctx, toInternalIngressSpec(spec))
+	return fromInternalIngress(result), err
+}
+
+func (c *Client) ListIngress(ctx context.Context, owner *IngressOwnership) ([]Ingress, error) {
+	var internalOwner *app.IngressOwnership
+	if owner != nil {
+		internalOwner = &app.IngressOwnership{System: owner.System, ScopeID: owner.ScopeID}
+	}
+	items, err := c.service.ListIngress(ctx, internalOwner)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Ingress, 0, len(items))
+	for _, item := range items {
+		out = append(out, fromInternalIngress(item))
+	}
+	return out, nil
+}
+
+func (c *Client) StartIngress(ctx context.Context, ref IngressRef) (Ingress, error) {
+	result, err := c.service.StartIngress(ctx, toInternalIngressRef(ref))
+	return fromInternalIngress(result), err
+}
+
+func (c *Client) StopIngress(ctx context.Context, ref IngressRef) (Ingress, error) {
+	result, err := c.service.StopIngress(ctx, toInternalIngressRef(ref))
+	return fromInternalIngress(result), err
+}
+
+func (c *Client) StatusIngress(ctx context.Context, ref IngressRef) (Ingress, error) {
+	result, err := c.service.StatusIngress(ctx, toInternalIngressRef(ref))
+	return fromInternalIngress(result), err
+}
+
+func (c *Client) ReleaseIngress(ctx context.Context, ref IngressRef) error {
+	return c.service.ReleaseIngress(ctx, toInternalIngressRef(ref))
+}
+
+func toInternalIngressSpec(spec IngressSpec) app.IngressSpec {
+	return app.IngressSpec{Name: spec.Name, LocalPort: spec.LocalPort, DialHost: spec.DialHost, Provider: spec.Provider, PublicHost: spec.PublicHost, CallbackPath: spec.CallbackPath, Owner: app.IngressOwnership{System: spec.Owner.System, ScopeID: spec.Owner.ScopeID}, ExpectedRevision: spec.ExpectedRevision, Metadata: spec.Metadata}
+}
+
+func toInternalIngressRef(ref IngressRef) app.IngressRef {
+	return app.IngressRef{Name: ref.Name, Owner: app.IngressOwnership{System: ref.Owner.System, ScopeID: ref.Owner.ScopeID}, ExpectedRevision: ref.ExpectedRevision}
+}
+
+func fromInternalIngress(item app.Ingress) Ingress {
+	metadata := map[string]string{}
+	maps.Copy(metadata, item.Metadata)
+	return Ingress{Name: item.Name, LocalHost: item.LocalHost, LocalPort: item.LocalPort, DialHost: item.DialHost, Provider: item.Provider, PublicHost: item.PublicHost, CallbackPath: item.CallbackPath, CallbackURL: item.CallbackURL, EndpointID: item.EndpointID, SessionID: item.SessionID, Owner: IngressOwnership{System: item.Owner.System, ScopeID: item.Owner.ScopeID}, State: IngressState(item.State), Revision: item.Revision, Metadata: metadata}
 }
 
 func (c *Client) TunnelProviders() []string {
