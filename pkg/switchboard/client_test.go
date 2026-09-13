@@ -21,6 +21,7 @@ func (r fakeRegistry) Resolve(name string) (Provider, error) {
 }
 
 type fakeProvider struct {
+	contexts  []context.Context
 	endpoints map[string]Endpoint
 	sessions  map[string]Session
 }
@@ -38,15 +39,20 @@ func (p *fakeProvider) Capabilities() Capabilities {
 	return Capabilities{StableHostname: true, HTTPForwarding: true, HTTPSForwarding: true, OAuthSuitable: true}
 }
 
-func (p *fakeProvider) Init(context.Context, ProviderConfig) error { return nil }
+func (p *fakeProvider) Init(ctx context.Context, _ ProviderConfig) error {
+	p.contexts = append(p.contexts, ctx)
+	return nil
+}
 
-func (p *fakeProvider) EnsureEndpoint(_ context.Context, req EndpointRequest) (Endpoint, error) {
+func (p *fakeProvider) EnsureEndpoint(ctx context.Context, req EndpointRequest) (Endpoint, error) {
+	p.contexts = append(p.contexts, ctx)
 	ep := Endpoint{ID: req.PublicHost, Provider: "mock", Name: req.Name, Host: req.PublicHost, Metadata: req.Metadata}
 	p.endpoints[ep.ID] = ep
 	return ep, nil
 }
 
-func (p *fakeProvider) Start(_ context.Context, req StartRequest) (Session, error) {
+func (p *fakeProvider) Start(ctx context.Context, req StartRequest) (Session, error) {
+	p.contexts = append(p.contexts, ctx)
 	session := Session{
 		ID:         req.Endpoint.ID + "-session",
 		Provider:   "mock",
@@ -58,17 +64,20 @@ func (p *fakeProvider) Start(_ context.Context, req StartRequest) (Session, erro
 	return session, nil
 }
 
-func (p *fakeProvider) Stop(_ context.Context, sessionID string) error {
+func (p *fakeProvider) Stop(ctx context.Context, sessionID string) error {
+	p.contexts = append(p.contexts, ctx)
 	delete(p.sessions, sessionID)
 	return nil
 }
 
-func (p *fakeProvider) RemoveEndpoint(_ context.Context, endpointID string) error {
+func (p *fakeProvider) RemoveEndpoint(ctx context.Context, endpointID string) error {
+	p.contexts = append(p.contexts, ctx)
 	delete(p.endpoints, endpointID)
 	return nil
 }
 
-func (p *fakeProvider) Status(_ context.Context, endpointID string) (EndpointStatus, error) {
+func (p *fakeProvider) Status(ctx context.Context, endpointID string) (EndpointStatus, error) {
+	p.contexts = append(p.contexts, ctx)
 	for _, session := range p.sessions {
 		if session.EndpointID == endpointID {
 			return EndpointStatus{Ready: true, Endpoint: p.endpoints[endpointID], SessionID: session.ID, Message: "active"}, nil
@@ -132,6 +141,9 @@ func TestClientUsesExplicitConfigPathAndProviderInjection(t *testing.T) {
 }
 
 func TestClientOwnsIngressLifecycleEndToEnd(t *testing.T) {
+	type contextKey struct{}
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), contextKey{}, "ingress"), time.Minute)
+	defer cancel()
 	dir := t.TempDir()
 	provider := newFakeProvider()
 	client := New(Options{ConfigPath: filepath.Join(dir, "config.yaml"), ProviderRegistry: fakeRegistry{provider: provider}, ApplyFunc: func(string, Config) error { return nil }})
@@ -146,41 +158,52 @@ func TestClientOwnsIngressLifecycleEndToEnd(t *testing.T) {
 
 	owner := IngressOwnership{System: "ctx", ScopeID: "workspace-1"}
 	spec := IngressSpec{Name: "tracker-hooks", LocalPort: 8080, Provider: "mock", PublicHost: "hooks.example.com", CallbackPath: "/webhooks/trackers", Owner: owner, Metadata: map[string]string{"purpose": "tracker"}}
-	created, err := client.EnsureIngress(context.Background(), spec)
+	created, err := client.EnsureIngress(ctx, spec)
 	if err != nil {
 		t.Fatalf("EnsureIngress: %v", err)
 	}
 	if created.CallbackURL != "https://hooks.example.com/webhooks/trackers" || created.Revision != 1 {
 		t.Fatalf("created ingress = %#v", created)
 	}
-	repeated, err := client.EnsureIngress(context.Background(), spec)
+	repeated, err := client.EnsureIngress(ctx, spec)
 	if err != nil || repeated.Revision != created.Revision {
 		t.Fatalf("idempotent ensure = %#v, err = %v", repeated, err)
 	}
 
 	wrongOwner := spec
 	wrongOwner.Owner.ScopeID = "workspace-2"
-	if _, err := client.EnsureIngress(context.Background(), wrongOwner); err == nil {
+	if _, err := client.EnsureIngress(ctx, wrongOwner); err == nil {
 		t.Fatal("ownership conflict was accepted")
 	}
 
-	started, err := client.StartIngress(context.Background(), IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &created.Revision})
+	started, err := client.StartIngress(ctx, IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &created.Revision})
 	if err != nil || started.State != IngressStateRunning || started.SessionID == "" {
 		t.Fatalf("StartIngress = %#v, err = %v", started, err)
 	}
-	stopped, err := client.StopIngress(context.Background(), IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &started.Revision})
+	status, err := client.StatusIngress(ctx, IngressRef{Name: created.Name, Owner: owner})
+	if err != nil || status.State != IngressStateRunning {
+		t.Fatalf("StatusIngress = %#v, err = %v", status, err)
+	}
+	stopped, err := client.StopIngress(ctx, IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &started.Revision})
 	if err != nil || stopped.State != IngressStateStopped || stopped.SessionID != "" {
 		t.Fatalf("StopIngress = %#v, err = %v", stopped, err)
 	}
-	if err := client.ReleaseIngress(context.Background(), IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &stopped.Revision}); err != nil {
+	if err := client.ReleaseIngress(ctx, IngressRef{Name: created.Name, Owner: owner, ExpectedRevision: &stopped.Revision}); err != nil {
 		t.Fatalf("ReleaseIngress: %v", err)
 	}
 	if len(provider.endpoints) != 0 {
 		t.Fatalf("remote endpoints remain: %#v", provider.endpoints)
 	}
-	items, err := client.ListIngress(context.Background(), &owner)
+	items, err := client.ListIngress(ctx, &owner)
 	if err != nil || len(items) != 0 {
 		t.Fatalf("ListIngress = %#v, err = %v", items, err)
+	}
+	deadline, _ := ctx.Deadline()
+	for _, providerCtx := range provider.contexts {
+		providerDeadline, ok := providerCtx.Deadline()
+		if providerCtx.Value(contextKey{}) != "ingress" || !ok || providerDeadline.After(deadline) {
+			t.Fatal("provider operation lost the ingress caller context or deadline")
+		}
 	}
 }
 
