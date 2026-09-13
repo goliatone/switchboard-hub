@@ -76,14 +76,14 @@ homebrew_casks:
     caveats: |
       The Homebrew cask installs the canonical `switchd` command only.
       Linux packages continue to provide the `sbd` alias.
-    url:
-      verified: github.com/goliatone/switchboard-hub/
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/switchd"]
-          end
+    # Escape the Homebrew path token so GoReleaser leaves it for install time.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr",
+              args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/switchd"]
+        end
+      end
 
 nfpms:
   - id: switchd
