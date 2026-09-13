@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.8.2](https://github.com/goliatone/switchboard-hub/compare/v0.8.1...v0.8.2) - (2026-09-13)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- Goreleaser setup ([2011270](https://github.com/goliatone/switchboard-hub/commit/20112702c3f3186be35fef71b4482eec7d8c3f35))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.8.2 ([362d7fb](https://github.com/goliatone/switchboard-hub/commit/362d7fbac8e2ba0833d669efbcd7b1ddedb06606))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.8.1 ([6ad68fb](https://github.com/goliatone/switchboard-hub/commit/6ad68fba8c0b665393ad0b5478a7d73dd99d87aa))  - (goliatone)
+
 # [0.8.1](https://github.com/goliatone/switchboard-hub/compare/v0.8.0...v0.8.1) - (2026-08-22)
 
 ## <!-- 13 -->📦 Bumps
