@@ -110,10 +110,6 @@ func DetectReachableDialHostContext(ctx context.Context, port int) (string, bool
 	return "", false
 }
 
-func refreshResolvedDialHost(a *config.App) bool {
-	return refreshResolvedDialHostContext(context.Background(), a)
-}
-
 func refreshResolvedDialHostContext(ctx context.Context, a *config.App) bool {
 	if a == nil {
 		return false

@@ -337,6 +337,10 @@ func (s *Service) ExposeApp(name, providerName, publicHost string) error {
 }
 
 func (s *Service) AppUp(name string) error {
+	return s.AppUpContext(context.Background(), name)
+}
+
+func (s *Service) AppUpContext(ctx context.Context, name string) error {
 	p, c, err := s.LoadOrCreateDefaultConfig()
 	if err != nil {
 		return err
@@ -346,7 +350,7 @@ func (s *Service) AppUp(name string) error {
 		return err
 	}
 	a := c.Apps[idx]
-	if refreshResolvedDialHost(&c.Apps[idx]) {
+	if refreshResolvedDialHostContext(ctx, &c.Apps[idx]) {
 		a = c.Apps[idx]
 	}
 	upsertLegacyRoute(c, a.LocalHost, a.LocalPort, ConfiguredDialHost(a))
@@ -356,24 +360,32 @@ func (s *Service) AppUp(name string) error {
 	if err := s.applyConfig(p, c); err != nil {
 		return err
 	}
-	if _, err := s.EnsureAppRuntime(c, name); err != nil {
+	if _, err := s.EnsureAppRuntimeContext(ctx, c, name); err != nil {
 		return err
 	}
 	return s.store.Save(p, c)
 }
 
 func (s *Service) AppDown(name string) error {
+	return s.AppDownContext(context.Background(), name)
+}
+
+func (s *Service) AppDownContext(ctx context.Context, name string) error {
 	p, c, err := s.LoadOrCreateDefaultConfig()
 	if err != nil {
 		return err
 	}
-	if _, err := s.StopAppRuntime(c, name); err != nil {
+	if _, err := s.StopAppRuntimeContext(ctx, c, name); err != nil {
 		return err
 	}
 	return s.store.Save(p, c)
 }
 
 func (s *Service) EnsurePublicEndpoint(c *config.Config, name, providerName, publicHost string) (config.App, error) {
+	return s.EnsurePublicEndpointContext(context.Background(), c, name, providerName, publicHost)
+}
+
+func (s *Service) EnsurePublicEndpointContext(ctx context.Context, c *config.Config, name, providerName, publicHost string) (config.App, error) {
 	if c == nil {
 		return config.App{}, fmt.Errorf("config is nil")
 	}
@@ -394,13 +406,13 @@ func (s *Service) EnsurePublicEndpoint(c *config.Config, name, providerName, pub
 	if err != nil {
 		return config.App{}, actionableProviderResolveError(providerName, err)
 	}
-	if err := initProviderWithConfig(pr, c, providerName, 20*time.Second); err != nil {
+	if err := initProviderWithConfigContext(ctx, pr, c, providerName, 20*time.Second); err != nil {
 		return config.App{}, err
 	}
-	localURL := LocalURLForApp(c.Apps[idx], false)
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	localURL := LocalURLForAppContext(ctx, c.Apps[idx], false)
+	ensureCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
-	ep, err := pr.EnsureEndpoint(ctx, tunnel.EndpointRequest{
+	ep, err := pr.EnsureEndpoint(ensureCtx, tunnel.EndpointRequest{
 		Name:       appName,
 		PublicHost: host,
 		LocalURL:   localURL,

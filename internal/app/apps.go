@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -27,6 +28,10 @@ func ListApps() ([]config.App, error) {
 }
 
 func upsertApp(c *config.Config, nameOrHost string, port int, opts *CreateAppOptions) (config.App, error) {
+	return upsertAppContext(context.Background(), c, nameOrHost, port, opts)
+}
+
+func upsertAppContext(ctx context.Context, c *config.Config, nameOrHost string, port int, opts *CreateAppOptions) (config.App, error) {
 	if c == nil {
 		return config.App{}, errors.New("config is nil")
 	}
@@ -61,7 +66,7 @@ func upsertApp(c *config.Config, nameOrHost string, port int, opts *CreateAppOpt
 		Metadata:  map[string]string{},
 	}
 	if normalizedDialHost == "" {
-		if resolvedDialHost, ok := DetectReachableDialHost(port); ok {
+		if resolvedDialHost, ok := DetectReachableDialHostContext(ctx, port); ok {
 			app.ResolvedDialHost = resolvedDialHost
 		}
 	}

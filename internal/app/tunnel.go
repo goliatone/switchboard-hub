@@ -154,10 +154,6 @@ func tunnelProviderConfig(c *config.Config, providerName string) tunnel.Provider
 	return out
 }
 
-func initProviderWithConfig(pr tunnel.Provider, c *config.Config, providerName string, timeout time.Duration) error {
-	return initProviderWithConfigContext(context.Background(), pr, c, providerName, timeout)
-}
-
 func initProviderWithConfigContext(parent context.Context, pr tunnel.Provider, c *config.Config, providerName string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
@@ -355,11 +351,15 @@ func AppTunnelHealthStatus() ([]AppTunnelHealth, error) {
 }
 
 func (s *Service) AppTunnelHealthStatus() ([]AppTunnelHealth, error) {
+	return s.AppTunnelHealthStatusContext(context.Background())
+}
+
+func (s *Service) AppTunnelHealthStatusContext(ctx context.Context) ([]AppTunnelHealth, error) {
 	_, c, err := s.LoadOrCreateDefaultConfig()
 	if err != nil {
 		return nil, err
 	}
-	return s.appTunnelHealthStatusFromConfig(c)
+	return s.appTunnelHealthStatusFromConfigContext(ctx, c)
 }
 
 func appTunnelHealthStatusFromConfig(c *config.Config) ([]AppTunnelHealth, error) {
@@ -367,6 +367,10 @@ func appTunnelHealthStatusFromConfig(c *config.Config) ([]AppTunnelHealth, error
 }
 
 func (s *Service) appTunnelHealthStatusFromConfig(c *config.Config) ([]AppTunnelHealth, error) {
+	return s.appTunnelHealthStatusFromConfigContext(context.Background(), c)
+}
+
+func (s *Service) appTunnelHealthStatusFromConfigContext(ctx context.Context, c *config.Config) ([]AppTunnelHealth, error) {
 	if c == nil {
 		return nil, fmt.Errorf("config is nil")
 	}
@@ -393,13 +397,13 @@ func (s *Service) appTunnelHealthStatusFromConfig(c *config.Config) ([]AppTunnel
 			out = append(out, h)
 			continue
 		}
-		if initErr := initProviderWithConfig(pr, c, h.Provider, 8*time.Second); initErr != nil {
+		if initErr := initProviderWithConfigContext(ctx, pr, c, h.Provider, 8*time.Second); initErr != nil {
 			h.Err = initErr.Error()
 			out = append(out, h)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		st, err := pr.Status(ctx, h.EndpointID)
+		statusCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		st, err := pr.Status(statusCtx, h.EndpointID)
 		cancel()
 		if err != nil {
 			h.Err = err.Error()

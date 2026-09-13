@@ -75,7 +75,7 @@ type Ingress struct {
 	Metadata     map[string]string
 }
 
-func (s *Service) EnsureIngress(_ context.Context, spec IngressSpec) (Ingress, error) {
+func (s *Service) EnsureIngress(ctx context.Context, spec IngressSpec) (Ingress, error) {
 	normalized, err := validateIngressSpec(spec)
 	if err != nil {
 		return Ingress{}, err
@@ -100,7 +100,7 @@ func (s *Service) EnsureIngress(_ context.Context, spec IngressSpec) (Ingress, e
 		if normalized.ExpectedRevision != nil && *normalized.ExpectedRevision != 0 {
 			return Ingress{}, fmt.Errorf("ingress %q revision conflict: expected %d, record does not exist", normalized.Name, *normalized.ExpectedRevision)
 		}
-		created, createErr := upsertApp(cfg, normalized.Name, normalized.LocalPort, &CreateAppOptions{DialHost: normalized.DialHost})
+		created, createErr := upsertAppContext(ctx, cfg, normalized.Name, normalized.LocalPort, &CreateAppOptions{DialHost: normalized.DialHost})
 		if createErr != nil {
 			return Ingress{}, createErr
 		}
@@ -116,7 +116,7 @@ func (s *Service) EnsureIngress(_ context.Context, spec IngressSpec) (Ingress, e
 	if dialHost != "" {
 		cfg.Apps[idx].ResolvedDialHost = ""
 	}
-	if _, err := s.EnsurePublicEndpoint(cfg, normalized.Name, normalized.Provider, normalized.PublicHost); err != nil {
+	if _, err := s.EnsurePublicEndpointContext(ctx, cfg, normalized.Name, normalized.Provider, normalized.PublicHost); err != nil {
 		return Ingress{}, err
 	}
 
@@ -167,13 +167,13 @@ func (s *Service) StartIngress(ctx context.Context, ref IngressRef) (Ingress, er
 	if current.State == IngressStateRunning {
 		return s.StatusIngress(ctx, ref)
 	}
-	if err := s.AppUp(current.Name); err != nil {
+	if err := s.AppUpContext(ctx, current.Name); err != nil {
 		return Ingress{}, err
 	}
 	return s.updateIngressState(current.Name, current.Owner, IngressStateRunning)
 }
 
-func (s *Service) StopIngress(_ context.Context, ref IngressRef) (Ingress, error) {
+func (s *Service) StopIngress(ctx context.Context, ref IngressRef) (Ingress, error) {
 	current, err := s.loadIngress(ref)
 	if err != nil {
 		return Ingress{}, err
@@ -181,18 +181,18 @@ func (s *Service) StopIngress(_ context.Context, ref IngressRef) (Ingress, error
 	if current.State == IngressStateStopped && current.SessionID == "" {
 		return current, nil
 	}
-	if err := s.AppDown(current.Name); err != nil {
+	if err := s.AppDownContext(ctx, current.Name); err != nil {
 		return Ingress{}, err
 	}
 	return s.updateIngressState(current.Name, current.Owner, IngressStateStopped)
 }
 
-func (s *Service) StatusIngress(_ context.Context, ref IngressRef) (Ingress, error) {
+func (s *Service) StatusIngress(ctx context.Context, ref IngressRef) (Ingress, error) {
 	current, err := s.loadIngress(ref)
 	if err != nil {
 		return Ingress{}, err
 	}
-	statuses, err := s.AppTunnelHealthStatus()
+	statuses, err := s.AppTunnelHealthStatusContext(ctx)
 	if err != nil {
 		return Ingress{}, err
 	}
@@ -224,7 +224,7 @@ func (s *Service) ReleaseIngress(ctx context.Context, ref IngressRef) error {
 	if idx < 0 {
 		return fmt.Errorf("ingress not found: %s", current.Name)
 	}
-	if _, err := s.StopAppRuntime(cfg, current.Name); err != nil {
+	if _, err := s.StopAppRuntimeContext(ctx, cfg, current.Name); err != nil {
 		return err
 	}
 	endpoint := cfg.Apps[idx].PublicEndpoint
