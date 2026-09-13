@@ -1,5 +1,19 @@
 # Changelog
 
+# [0.8.3](https://github.com/goliatone/switchboard-hub/compare/v0.8.2...v0.8.3) - (2026-09-13)
+
+## <!-- 1 -->🐛 Bug Fixes
+
+- Code quality ([ad67b51](https://github.com/goliatone/switchboard-hub/commit/ad67b511b979c54129deda4296d61dcf8f039302))  - (goliatone)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.8.3 ([a8c207b](https://github.com/goliatone/switchboard-hub/commit/a8c207b389aefe2daeea78ca23cf1abfb4708d88))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.8.2 ([1159587](https://github.com/goliatone/switchboard-hub/commit/1159587839f9fc0b0237ba33f8ff1e68316a783d))  - (goliatone)
+
 # [0.8.2](https://github.com/goliatone/switchboard-hub/compare/v0.8.1...v0.8.2) - (2026-09-13)
 
 ## <!-- 1 -->🐛 Bug Fixes
