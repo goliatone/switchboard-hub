@@ -1,5 +1,20 @@
 # Changelog
 
+# [0.9.0](https://github.com/goliatone/switchboard-hub/compare/v0.8.3...v0.9.0) - (2026-11-17)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.9.0 ([e73dd86](https://github.com/goliatone/switchboard-hub/commit/e73dd8692f9555019c2cf6f883db8fa9d9fd222e))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Tunnel tailscale and cloudflare providers ([f38cd89](https://github.com/goliatone/switchboard-hub/commit/f38cd895072e9952311a787265177b74699b8af3))  - (goliatone)
+- Switchboard hander ([4417d04](https://github.com/goliatone/switchboard-hub/commit/4417d04645de860538536dcf629cbe23cee8742a))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.8.3 ([ffd5b5b](https://github.com/goliatone/switchboard-hub/commit/ffd5b5b3201d0d6b0ded784686bf75a8eae078da))  - (goliatone)
+
 # [0.8.3](https://github.com/goliatone/switchboard-hub/compare/v0.8.2...v0.8.3) - (2026-09-13)
 
 ## <!-- 1 -->🐛 Bug Fixes
