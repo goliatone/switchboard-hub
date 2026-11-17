@@ -28,6 +28,7 @@ type ProviderRegistry interface {
 }
 
 type ServiceOptions struct {
+	Ingress                  *IngressOptions
 	ConfigPath               string
 	Store                    ConfigStore
 	ProviderRegistry         ProviderRegistry
@@ -38,6 +39,7 @@ type ServiceOptions struct {
 }
 
 type Service struct {
+	ingress                  *IngressOptions
 	configPath               string
 	store                    ConfigStore
 	providerRegistry         ProviderRegistry
@@ -74,8 +76,15 @@ func NewService(opts ServiceOptions) *Service {
 		runCloudflareTunnelLogin: opts.RunCloudflareTunnelLogin,
 		stdioIsInteractive:       opts.StdioIsInteractive,
 	}
+	if opts.Ingress != nil {
+		copy := cloneIngressOptions(opts.Ingress)
+		svc.ingress = &copy
+	}
 	if svc.store == nil {
 		svc.store = defaultConfigStore{}
+		if svc.ingress != nil {
+			svc.store = &config.IngressStore{}
+		}
 	}
 	if opts.ProviderRegistry != nil {
 		svc.providerRegistry = opts.ProviderRegistry
@@ -102,6 +111,11 @@ func DefaultService() *Service {
 }
 
 func (s *Service) ConfigPath() (string, error) {
+	if s != nil {
+		if err := validateIngressOptions(s.configPath, s.ingress); err != nil {
+			return "", err
+		}
+	}
 	if s != nil && strings.TrimSpace(s.configPath) != "" {
 		return filepath.Clean(strings.TrimSpace(s.configPath)), nil
 	}
@@ -141,6 +155,9 @@ func (s *Service) LoadOrDefaultConfig() (string, *config.Config, error) {
 }
 
 func (s *Service) LoadOrCreateDefaultConfig() (string, *config.Config, error) {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return "", nil, err
+	}
 	p, err := s.ConfigPath()
 	if err != nil {
 		return "", nil, err
@@ -153,6 +170,9 @@ func (s *Service) LoadOrCreateDefaultConfig() (string, *config.Config, error) {
 }
 
 func (s *Service) SaveConfig(cfg *config.Config) error {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return err
+	}
 	p, err := s.ConfigPath()
 	if err != nil {
 		return err
@@ -161,6 +181,9 @@ func (s *Service) SaveConfig(cfg *config.Config) error {
 }
 
 func (s *Service) SaveConfigAt(path string, cfg *config.Config) error {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return err
+	}
 	return s.store.Save(path, cfg)
 }
 
@@ -183,6 +206,9 @@ func (s *Service) CreateApp(nameOrHost string, port int, opts *CreateAppOptions)
 }
 
 func (s *Service) RemoveApp(name string) error {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return err
+	}
 	p, c, err := s.LoadOrDefaultConfig()
 	if err != nil {
 		return err
@@ -194,6 +220,9 @@ func (s *Service) RemoveApp(name string) error {
 	idx := findAppByName(c, name)
 	if idx < 0 {
 		return fmt.Errorf("app not found: %s", name)
+	}
+	if c.Apps[idx].Metadata[ingressResourceKey] != "" {
+		return fmt.Errorf("use owned ingress release for isolated records")
 	}
 	host := c.Apps[idx].LocalHost
 	c.Apps = append(c.Apps[:idx], c.Apps[idx+1:]...)
@@ -213,6 +242,9 @@ func (s *Service) ListApps() ([]config.App, error) {
 }
 
 func (s *Service) Apply() error {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return err
+	}
 	p, c, err := s.LoadOrDefaultConfig()
 	if err != nil {
 		return err
@@ -226,6 +258,9 @@ func (s *Service) Apply() error {
 }
 
 func (s *Service) ApplyConfig(path string, cfg *config.Config) error {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return err
+	}
 	return s.applyConfig(path, cfg)
 }
 
@@ -253,7 +288,7 @@ func (s *Service) TunnelInitWithOptions(providerName string, opts TunnelInitOpti
 	runInit := func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		return pr.Init(ctx, tunnelProviderConfig(c, providerName))
+		return initProviderWithConfigContext(ctx, pr, c, providerName, 20*time.Second)
 	}
 	if err := runInit(); err != nil {
 		if err := s.retryCloudflareInit(c, providerName, opts, err, runInit); err != nil {
@@ -311,7 +346,7 @@ func (s *Service) TunnelStatus(providerName string) ([]TunnelProviderStatus, err
 			Notes:         caps.Notes,
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err = pr.Init(ctx, tunnelProviderConfig(c, name))
+		err = initProviderWithConfigContext(ctx, pr, c, name, 10*time.Second)
 		cancel()
 		if err != nil {
 			st.Available = false
@@ -348,6 +383,9 @@ func (s *Service) AppUpContext(ctx context.Context, name string) error {
 	idx, _, err := appIndexByName(c, name)
 	if err != nil {
 		return err
+	}
+	if c.Apps[idx].Metadata[ingressResourceKey] != "" {
+		return fmt.Errorf("use owned ingress lifecycle for isolated records")
 	}
 	a := c.Apps[idx]
 	if refreshResolvedDialHostContext(ctx, &c.Apps[idx]) {
@@ -386,12 +424,18 @@ func (s *Service) EnsurePublicEndpoint(c *config.Config, name, providerName, pub
 }
 
 func (s *Service) EnsurePublicEndpointContext(ctx context.Context, c *config.Config, name, providerName, publicHost string) (config.App, error) {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return config.App{}, err
+	}
 	if c == nil {
 		return config.App{}, fmt.Errorf("config is nil")
 	}
 	idx, appName, err := appIndexByName(c, name)
 	if err != nil {
 		return config.App{}, err
+	}
+	if c.Apps[idx].Metadata[ingressResourceKey] != "" {
+		return config.App{}, fmt.Errorf("use owned ingress lifecycle for isolated records")
 	}
 	providerName, err = s.resolveProviderName(c, providerName)
 	if err != nil {
@@ -439,12 +483,18 @@ func (s *Service) EnsureAppRuntime(c *config.Config, name string) (config.App, e
 }
 
 func (s *Service) EnsureAppRuntimeContext(ctx context.Context, c *config.Config, name string) (config.App, error) {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return config.App{}, err
+	}
 	if c == nil {
 		return config.App{}, fmt.Errorf("config is nil")
 	}
 	idx, _, err := appIndexByName(c, name)
 	if err != nil {
 		return config.App{}, err
+	}
+	if c.Apps[idx].Metadata[ingressResourceKey] != "" {
+		return config.App{}, fmt.Errorf("use owned ingress lifecycle for isolated records")
 	}
 	a := c.Apps[idx]
 	if strings.TrimSpace(a.PublicEndpoint.Provider) == "" || strings.TrimSpace(a.PublicEndpoint.EndpointID) == "" {
@@ -510,12 +560,18 @@ func (s *Service) StopAppRuntime(c *config.Config, name string) (config.App, err
 }
 
 func (s *Service) StopAppRuntimeContext(ctx context.Context, c *config.Config, name string) (config.App, error) {
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return config.App{}, err
+	}
 	if c == nil {
 		return config.App{}, fmt.Errorf("config is nil")
 	}
 	idx, _, err := appIndexByName(c, name)
 	if err != nil {
 		return config.App{}, err
+	}
+	if c.Apps[idx].Metadata[ingressResourceKey] != "" {
+		return config.App{}, fmt.Errorf("use owned ingress lifecycle for isolated records")
 	}
 	a := c.Apps[idx]
 	sessionID := strings.TrimSpace(a.PublicEndpoint.ActiveSessionID)

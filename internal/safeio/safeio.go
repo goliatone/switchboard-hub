@@ -100,6 +100,10 @@ func AtomicWriteFileOwned(path string, data []byte, perm os.FileMode, uid, gid i
 			return err
 		}
 	}
+	if err := f.Sync(); err != nil {
+		cleanup()
+		return err
+	}
 	if err := f.Close(); err != nil {
 		_ = root.Remove(tmpName)
 		return err
@@ -118,6 +122,10 @@ func AtomicWriteFileOwned(path string, data []byte, perm os.FileMode, uid, gid i
 	if err := unix.Renameat(dirFD, tmpName, dirFD, name); err != nil {
 		_ = dir.Close()
 		_ = root.Remove(tmpName)
+		return err
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
 		return err
 	}
 	if err := dir.Close(); err != nil {

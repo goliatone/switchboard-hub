@@ -155,6 +155,9 @@ func tunnelProviderConfig(c *config.Config, providerName string) tunnel.Provider
 }
 
 func initProviderWithConfigContext(parent context.Context, pr tunnel.Provider, c *config.Config, providerName string, timeout time.Duration) error {
+	if c != nil && c.Tunnel.Providers[strings.ToLower(strings.TrimSpace(providerName))].CredentialRef != "" {
+		return fmt.Errorf("private credential references require the isolated credential integration; provider initialization is disabled")
+	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	return pr.Init(ctx, tunnelProviderConfig(c, providerName))

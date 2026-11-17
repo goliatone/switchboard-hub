@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/goliatone/switchboard-hub/internal/config"
+
+	"github.com/goliatone/switchboard-hub/pkg/ingress"
 )
 
 const (
@@ -41,6 +43,7 @@ type IngressOwnership struct {
 }
 
 type IngressSpec struct {
+	Binding          *ingress.Binding `json:"binding,omitempty" yaml:"binding,omitempty"`
 	Name             string
 	LocalPort        int
 	DialHost         string
@@ -59,6 +62,7 @@ type IngressRef struct {
 }
 
 type Ingress struct {
+	Binding      *ingress.Binding `json:"binding,omitempty"`
 	Name         string
 	LocalHost    string
 	LocalPort    int
@@ -76,6 +80,15 @@ type Ingress struct {
 }
 
 func (s *Service) EnsureIngress(ctx context.Context, spec IngressSpec) (Ingress, error) {
+	if s.ingress != nil {
+		return s.ensureIsolatedIngress(ctx, spec)
+	}
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return Ingress{}, err
+	}
+	if spec.Binding != nil {
+		return Ingress{}, fmt.Errorf("endpoint binding requires tunnel-only ingress configuration")
+	}
 	normalized, err := validateIngressSpec(spec)
 	if err != nil {
 		return Ingress{}, err
@@ -86,6 +99,9 @@ func (s *Service) EnsureIngress(ctx context.Context, spec IngressSpec) (Ingress,
 	}
 	idx := findAppByName(cfg, normalized.Name)
 	if idx >= 0 {
+		if cfg.Apps[idx].Metadata[ingressResourceKey] != "" {
+			return Ingress{}, fmt.Errorf("owned isolated ingress requires tunnel-only client configuration")
+		}
 		current, managedErr := ingressFromApp(cfg.Apps[idx])
 		if managedErr != nil {
 			return Ingress{}, fmt.Errorf("ingress %q conflicts with an unmanaged app", normalized.Name)
@@ -160,6 +176,12 @@ func (s *Service) ListIngress(_ context.Context, owner *IngressOwnership) ([]Ing
 }
 
 func (s *Service) StartIngress(ctx context.Context, ref IngressRef) (Ingress, error) {
+	if s.ingress != nil {
+		return s.runIsolatedIngress(ctx, "start", ref)
+	}
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return Ingress{}, err
+	}
 	current, err := s.loadIngress(ref)
 	if err != nil {
 		return Ingress{}, err
@@ -174,6 +196,12 @@ func (s *Service) StartIngress(ctx context.Context, ref IngressRef) (Ingress, er
 }
 
 func (s *Service) StopIngress(ctx context.Context, ref IngressRef) (Ingress, error) {
+	if s.ingress != nil {
+		return s.runIsolatedIngress(ctx, "stop", ref)
+	}
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return Ingress{}, err
+	}
 	current, err := s.loadIngress(ref)
 	if err != nil {
 		return Ingress{}, err
@@ -188,6 +216,9 @@ func (s *Service) StopIngress(ctx context.Context, ref IngressRef) (Ingress, err
 }
 
 func (s *Service) StatusIngress(ctx context.Context, ref IngressRef) (Ingress, error) {
+	if s.ingress != nil {
+		return s.runIsolatedIngress(ctx, "status", ref)
+	}
 	current, err := s.loadIngress(ref)
 	if err != nil {
 		return Ingress{}, err
@@ -212,6 +243,13 @@ func (s *Service) StatusIngress(ctx context.Context, ref IngressRef) (Ingress, e
 }
 
 func (s *Service) ReleaseIngress(ctx context.Context, ref IngressRef) error {
+	if s.ingress != nil {
+		_, err := s.runIsolatedIngress(ctx, "release", ref)
+		return err
+	}
+	if err := s.requireIngressMutationSupport(); err != nil {
+		return err
+	}
 	current, err := s.loadIngress(ref)
 	if err != nil {
 		return err
@@ -261,6 +299,9 @@ func (s *Service) loadIngress(ref IngressRef) (Ingress, error) {
 	idx := findAppByName(cfg, name)
 	if idx < 0 {
 		return Ingress{}, fmt.Errorf("ingress not found: %s", name)
+	}
+	if s.ingress == nil && cfg.Apps[idx].Metadata[ingressResourceKey] != "" {
+		return Ingress{}, fmt.Errorf("owned isolated ingress requires tunnel-only client configuration")
 	}
 	current, err := ingressFromApp(cfg.Apps[idx])
 	if err != nil {
@@ -353,7 +394,17 @@ func ingressFromApp(candidate config.App) (Ingress, error) {
 		callbackURL = (&url.URL{Scheme: "https", Host: publicHost, Path: callbackPath}).String()
 	}
 	metadata := copyConsumerMetadata(candidate.Metadata)
-	return Ingress{Name: candidate.Name, LocalHost: candidate.LocalHost, LocalPort: candidate.LocalPort, DialHost: candidate.DialHost, Provider: candidate.PublicEndpoint.Provider, PublicHost: publicHost, CallbackPath: callbackPath, CallbackURL: callbackURL, EndpointID: candidate.PublicEndpoint.EndpointID, SessionID: candidate.PublicEndpoint.ActiveSessionID, Owner: IngressOwnership{System: candidate.Metadata[ingressMetadataOwnerSystem], ScopeID: candidate.Metadata[ingressMetadataOwnerScope]}, State: IngressState(candidate.Metadata[ingressMetadataState]), Revision: revision, Metadata: metadata}, nil
+	var binding *ingress.Binding
+	if candidate.Metadata[ingressResourceKey] != "" {
+		resource, err := isolatedResource(candidate)
+		if err != nil {
+			return Ingress{}, err
+		}
+		value := resource.Binding
+		binding = &value
+		callbackURL = ingressOrigin(publicHost, value.HTTPSPort) + callbackPath
+	}
+	return Ingress{Binding: binding, Name: candidate.Name, LocalHost: candidate.LocalHost, LocalPort: candidate.LocalPort, DialHost: candidate.DialHost, Provider: candidate.PublicEndpoint.Provider, PublicHost: publicHost, CallbackPath: callbackPath, CallbackURL: callbackURL, EndpointID: candidate.PublicEndpoint.EndpointID, SessionID: candidate.PublicEndpoint.ActiveSessionID, Owner: IngressOwnership{System: candidate.Metadata[ingressMetadataOwnerSystem], ScopeID: candidate.Metadata[ingressMetadataOwnerScope]}, State: IngressState(candidate.Metadata[ingressMetadataState]), Revision: revision, Metadata: metadata}, nil
 }
 
 func checkIngressRef(current Ingress, ref IngressRef) error {

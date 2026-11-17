@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -52,10 +53,12 @@ type Tunnels struct {
 }
 
 type TunnelProviderCfg struct {
-	Enabled   bool              `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	AccountID string            `yaml:"account_id,omitempty" json:"account_id,omitempty"`
-	Zone      string            `yaml:"zone,omitempty" json:"zone,omitempty"`
-	Values    map[string]string `yaml:"values,omitempty" json:"values,omitempty"`
+	// CredentialRef stores only an opaque host-owned reference, never its value.
+	CredentialRef string            `json:"credential_ref,omitempty" yaml:"credential_ref,omitempty"`
+	Enabled       bool              `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	AccountID     string            `yaml:"account_id,omitempty" json:"account_id,omitempty"`
+	Zone          string            `yaml:"zone,omitempty" json:"zone,omitempty"`
+	Values        map[string]string `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 type App struct {
@@ -110,6 +113,13 @@ func Default(tld, dnsIP string) *Config {
 }
 
 func Load(path string) (*Config, error) {
+	if err := rejectIsolatedStore(path); err != nil {
+		return nil, err
+	}
+	return loadUnchecked(path)
+}
+
+func loadUnchecked(path string) (*Config, error) {
 	b, err := safeio.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
@@ -147,6 +157,9 @@ func Load(path string) (*Config, error) {
 }
 
 func LoadOrDefault(path string) (*Config, error) {
+	if err := rejectIsolatedStore(path); err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(path); err == nil {
 		return Load(path)
 	} else if !os.IsNotExist(err) {
@@ -172,6 +185,26 @@ func LoadOrCreateDefault(path string) (*Config, error) {
 }
 
 func Save(path string, c *Config) error {
+	canonical, err := safeio.CanonicalFile(path)
+	if err != nil {
+		return err
+	}
+	if err := rejectIsolatedStore(canonical); err != nil {
+		return err
+	}
+	uid, gid := sudoOwnership()
+	unlock, err := safeio.LockConfig(context.Background(), canonical+".lock", uid, gid)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := rejectIsolatedStore(canonical); err != nil {
+		return err
+	}
+	return saveUnchecked(canonical, c)
+}
+
+func saveUnchecked(path string, c *Config) error {
 	b, err := yaml.Marshal(c)
 	if err != nil {
 		return err
@@ -181,7 +214,7 @@ func Save(path string, c *Config) error {
 		return err
 	}
 	fixSudoOwnership(dir)
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	if err := safeio.AtomicWriteFile(path, b, 0o600); err != nil {
 		if os.IsPermission(err) && os.Geteuid() != 0 {
 			return fmt.Errorf("write config %s: %w (hint: sudo chown -R \"$USER\":staff %s)", path, err, dir)
 		}
@@ -192,8 +225,15 @@ func Save(path string, c *Config) error {
 }
 
 func fixSudoOwnership(path string) {
+	uid, gid := sudoOwnership()
+	if uid >= 0 && gid >= 0 {
+		_ = os.Chown(path, uid, gid)
+	}
+}
+
+func sudoOwnership() (int, int) {
 	if os.Geteuid() != 0 {
-		return
+		return -1, -1
 	}
 	uidStr := strings.TrimSpace(os.Getenv("SUDO_UID"))
 	gidStr := strings.TrimSpace(os.Getenv("SUDO_GID"))
@@ -201,18 +241,12 @@ func fixSudoOwnership(path string) {
 		uidStr = strings.TrimSpace(os.Getenv("SWITCHD_CONFIG_OWNER_UID"))
 		gidStr = strings.TrimSpace(os.Getenv("SWITCHD_CONFIG_OWNER_GID"))
 	}
-	if uidStr == "" || gidStr == "" {
-		return
+	uid, uidErr := strconv.Atoi(uidStr)
+	gid, gidErr := strconv.Atoi(gidStr)
+	if uidErr != nil || gidErr != nil || uid < 0 || gid < 0 {
+		return -1, -1
 	}
-	uid, err := strconv.Atoi(uidStr)
-	if err != nil {
-		return
-	}
-	gid, err := strconv.Atoi(gidStr)
-	if err != nil {
-		return
-	}
-	_ = os.Chown(path, uid, gid)
+	return uid, gid
 }
 
 func defaultTunnels() Tunnels {
