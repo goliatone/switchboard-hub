@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -50,6 +49,7 @@ type Provider struct {
 	sessions       map[string]sessionState
 	originCertPath string
 	runtimeConfig  providerRuntimeConfig
+	owned          ownedSettings
 }
 
 type sessionState struct {
@@ -313,43 +313,24 @@ func (p *Provider) Start(ctx context.Context, req tunnel.StartRequest) (tunnel.S
 	}, nil
 }
 
-func (p *Provider) Stop(_ context.Context, sessionID string) error {
+func (p *Provider) Stop(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return errors.New("session id is required")
 	}
-
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	state, ok := p.sessions[sessionID]
-	if ok {
-		delete(p.sessions, sessionID)
-	}
-	p.mu.Unlock()
 	if !ok {
-		return stopRecoveredSession(sessionID)
+		return errors.New("unverified legacy cloudflare session; explicit recovery required; PID-only cleanup is forbidden")
 	}
-
-	if err := state.process.Kill(); err != nil {
-		if isProcessGoneError(err) {
-			return nil
-		}
+	if err := state.process.Kill(); err != nil && !isProcessGoneError(err) {
 		return fmt.Errorf("stop cloudflare session %s: %w", sessionID, err)
 	}
-	return nil
-}
-
-func stopRecoveredSession(sessionID string) error {
-	pid, err := pidFromSessionID(sessionID)
-	if err != nil {
-		return fmt.Errorf("session not found: %s", sessionID)
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("find process for session %s: %w", sessionID, err)
-	}
-	if err := proc.Kill(); err != nil && !isProcessGoneError(err) {
-		return fmt.Errorf("stop cloudflare session %s: %w", sessionID, err)
-	}
+	delete(p.sessions, sessionID)
 	return nil
 }
 
@@ -688,18 +669,6 @@ func runCommand(ctx context.Context, name string, args ...string) (string, error
 		return "", fmt.Errorf("%w: %s", diag.SanitizeError(err), diag.Redact(s))
 	}
 	return diag.Redact(s), nil
-}
-
-func pidFromSessionID(sessionID string) (int, error) {
-	idx := strings.LastIndex(sessionID, "-")
-	if idx < 0 || idx+1 >= len(sessionID) {
-		return 0, errors.New("missing pid")
-	}
-	pid, err := strconv.Atoi(sessionID[idx+1:])
-	if err != nil || pid <= 0 {
-		return 0, errors.New("invalid pid")
-	}
-	return pid, nil
 }
 
 func isProcessGoneError(err error) bool {

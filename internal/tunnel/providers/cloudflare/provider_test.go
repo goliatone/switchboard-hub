@@ -382,12 +382,25 @@ func TestParseTunnelList(t *testing.T) {
 	}
 }
 
-func TestPIDFromSessionID(t *testing.T) {
-	pid, err := pidFromSessionID("endpoint-1-4242")
-	if err != nil {
-		t.Fatalf("pidFromSessionID returned error: %v", err)
+func TestStopRefusesUnverifiedLegacySession(t *testing.T) {
+	p := New()
+	if err := p.Stop(context.Background(), "unowned-987654"); err == nil || !strings.Contains(err.Error(), "PID-only") {
+		t.Fatalf("expected safe recovery error: %v", err)
 	}
-	if pid != 4242 {
-		t.Fatalf("unexpected pid: %d", pid)
+}
+
+func TestStopRetainsAuthorityAfterFailure(t *testing.T) {
+	fp := &fakeProcess{pid: 4242, killErr: errors.New("permission denied")}
+	p := New(WithProcessStarter(func(string, ...string) (process, error) { return fp, nil }))
+	session, err := p.Start(context.Background(), tunnel.StartRequest{Endpoint: tunnel.Endpoint{ID: "endpoint-1"}, LocalURL: "http://127.0.0.1:3000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = p.Stop(context.Background(), session.ID); err == nil {
+		t.Fatal("expected failure")
+	}
+	fp.killErr = nil
+	if err = p.Stop(context.Background(), session.ID); err != nil {
+		t.Fatal("retry lost original process authority", err)
 	}
 }

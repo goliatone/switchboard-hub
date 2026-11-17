@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/goliatone/switchboard-hub/internal/tunnel"
 )
@@ -53,44 +52,17 @@ func TestEnsureEndpointFromPublicHost(t *testing.T) {
 	}
 }
 
-func TestStartStopAndStatus(t *testing.T) {
-	run := func(_ context.Context, _ string, args ...string) (string, error) {
-		cmd := strings.Join(args, " ")
-		switch {
-		case strings.HasPrefix(cmd, "status --json"):
-			return `{"BackendState":"Running","Self":{"DNSName":"machine.ts.net."}}`, nil
-		case strings.HasPrefix(cmd, "funnel --bg 3000"):
-			return "ok", nil
-		case strings.HasPrefix(cmd, "funnel status --json"):
-			return `{"ok":true}`, nil
-		case strings.HasPrefix(cmd, "funnel reset"):
-			return "ok", nil
-		default:
-			return "", nil
-		}
+func TestLegacyLifecycleRefusesUnownedMutation(t *testing.T) {
+	calls := 0
+	p := New(WithCommandRunner(func(context.Context, string, ...string) (string, error) { calls++; return "", nil }))
+	if _, err := p.Start(context.Background(), tunnel.StartRequest{}); err == nil {
+		t.Fatal("legacy start accepted")
 	}
-
-	p := New(
-		WithLookPath(func(string) (string, error) { return "/usr/local/bin/tailscale", nil }),
-		WithCommandRunner(run),
-		WithClock(func() time.Time { return time.Unix(1710000000, 0) }),
-	)
-	sess, err := p.Start(context.Background(), tunnel.StartRequest{
-		Endpoint: tunnel.Endpoint{ID: "my-mac.ts.net"},
-		LocalURL: "http://127.0.0.1:3000",
-	})
-	if err != nil {
-		t.Fatalf("Start returned error: %v", err)
+	if err := p.Stop(context.Background(), "unknown-session"); err == nil {
+		t.Fatal("legacy cleanup accepted")
 	}
-	st, err := p.Status(context.Background(), "my-mac.ts.net")
-	if err != nil {
-		t.Fatalf("Status returned error: %v", err)
-	}
-	if !st.Ready {
-		t.Fatalf("expected ready status, got %#v", st)
-	}
-	if err := p.Stop(context.Background(), sess.ID); err != nil {
-		t.Fatalf("Stop returned error: %v", err)
+	if calls != 0 {
+		t.Fatal("unowned lifecycle invoked CLI")
 	}
 }
 

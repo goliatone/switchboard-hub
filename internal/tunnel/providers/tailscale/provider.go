@@ -19,6 +19,7 @@ import (
 const providerName = "tailscale"
 
 type Provider struct {
+	owned    ownedConfig
 	run      tunnel.CommandRunner
 	lookPath func(file string) (string, error)
 	now      func() time.Time
@@ -137,54 +138,12 @@ func (p *Provider) EnsureEndpoint(ctx context.Context, req tunnel.EndpointReques
 	}, nil
 }
 
-func (p *Provider) Start(ctx context.Context, req tunnel.StartRequest) (tunnel.Session, error) {
-	if err := p.Init(ctx, tunnel.ProviderConfig{}); err != nil {
-		return tunnel.Session{}, err
-	}
-	if strings.TrimSpace(req.Endpoint.ID) == "" {
-		return tunnel.Session{}, errors.New("endpoint id is required")
-	}
-	localPort, err := extractLocalPort(req.LocalURL)
-	if err != nil {
-		return tunnel.Session{}, err
-	}
-
-	if _, err := p.runTailscale(ctx, "funnel", "--bg", strconv.Itoa(localPort)); err != nil {
-		return tunnel.Session{}, fmt.Errorf("enable tailscale funnel on port %d: %w", localPort, err)
-	}
-	startedAt := p.now().UTC()
-	sessionID := fmt.Sprintf("%s-%d", req.Endpoint.ID, localPort)
-
-	p.mu.Lock()
-	p.sessions[sessionID] = req.Endpoint.ID
-	p.mu.Unlock()
-
-	return tunnel.Session{
-		ID:         sessionID,
-		Provider:   providerName,
-		EndpointID: req.Endpoint.ID,
-		PID:        0,
-		StartedAt:  startedAt,
-		Metadata: map[string]string{
-			"local_port": strconv.Itoa(localPort),
-		},
-	}, nil
+func (p *Provider) Start(_ context.Context, _ tunnel.StartRequest) (tunnel.Session, error) {
+	return tunnel.Session{}, errors.New("use isolated ingress with an explicit owned Tailscale binding; legacy persistent start is disabled")
 }
 
-func (p *Provider) Stop(ctx context.Context, sessionID string) error {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return errors.New("session id is required")
-	}
-
-	if _, err := p.runTailscale(ctx, "funnel", "reset"); err != nil {
-		return fmt.Errorf("disable tailscale funnel: %w", err)
-	}
-
-	p.mu.Lock()
-	delete(p.sessions, sessionID)
-	p.mu.Unlock()
-	return nil
+func (p *Provider) Stop(_ context.Context, sessionID string) error {
+	return errors.New("legacy Tailscale session has no owned binding; migrate to isolated ingress; global reset is forbidden")
 }
 
 func (p *Provider) RemoveEndpoint(_ context.Context, endpointID string) error {
