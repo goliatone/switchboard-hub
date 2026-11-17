@@ -7,6 +7,8 @@ import (
 
 	"github.com/goliatone/switchboard-hub/internal/app"
 	"github.com/goliatone/switchboard-hub/internal/config"
+
+	"github.com/goliatone/switchboard-hub/pkg/ingress"
 )
 
 type Config struct {
@@ -47,10 +49,12 @@ type Tunnels struct {
 }
 
 type TunnelProviderConfig struct {
-	Enabled   bool              `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	AccountID string            `json:"account_id,omitempty" yaml:"account_id,omitempty"`
-	Zone      string            `json:"zone,omitempty" yaml:"zone,omitempty"`
-	Values    map[string]string `json:"values,omitempty" yaml:"values,omitempty"`
+	// CredentialRef stores only an opaque host-owned reference, never its value.
+	CredentialRef string            `json:"credential_ref,omitempty" yaml:"credential_ref,omitempty"`
+	Enabled       bool              `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	AccountID     string            `json:"account_id,omitempty" yaml:"account_id,omitempty"`
+	Zone          string            `json:"zone,omitempty" yaml:"zone,omitempty"`
+	Values        map[string]string `json:"values,omitempty" yaml:"values,omitempty"`
 }
 
 type App struct {
@@ -82,6 +86,7 @@ type IngressOwnership struct {
 }
 
 type IngressSpec struct {
+	Binding          *ingress.Binding  `json:"binding,omitempty" yaml:"binding,omitempty"`
 	Name             string            `json:"name" yaml:"name"`
 	LocalPort        int               `json:"local_port" yaml:"local_port"`
 	DialHost         string            `json:"dial_host,omitempty" yaml:"dial_host,omitempty"`
@@ -100,6 +105,7 @@ type IngressRef struct {
 }
 
 type Ingress struct {
+	Binding      *ingress.Binding  `json:"binding,omitempty"`
 	Name         string            `json:"name"`
 	LocalHost    string            `json:"local_host"`
 	LocalPort    int               `json:"local_port"`
@@ -274,10 +280,11 @@ func fromInternalConfig(c *config.Config) Config {
 		values := map[string]string{}
 		maps.Copy(values, cfg.Values)
 		out.Tunnel.Providers[name] = TunnelProviderConfig{
-			Enabled:   cfg.Enabled,
-			AccountID: cfg.AccountID,
-			Zone:      cfg.Zone,
-			Values:    values,
+			CredentialRef: cfg.CredentialRef,
+			Enabled:       cfg.Enabled,
+			AccountID:     cfg.AccountID,
+			Zone:          cfg.Zone,
+			Values:        values,
 		}
 	}
 	for _, a := range c.Apps {
@@ -339,10 +346,11 @@ func toInternalConfig(c Config) *config.Config {
 		values := map[string]string{}
 		maps.Copy(values, cfg.Values)
 		out.Tunnel.Providers[name] = config.TunnelProviderCfg{
-			Enabled:   cfg.Enabled,
-			AccountID: cfg.AccountID,
-			Zone:      cfg.Zone,
-			Values:    values,
+			CredentialRef: cfg.CredentialRef,
+			Enabled:       cfg.Enabled,
+			AccountID:     cfg.AccountID,
+			Zone:          cfg.Zone,
+			Values:        values,
 		}
 	}
 	for _, a := range c.Apps {

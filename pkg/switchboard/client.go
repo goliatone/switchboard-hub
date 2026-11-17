@@ -13,6 +13,7 @@ import (
 )
 
 type Options struct {
+	Ingress          *IngressOptions
 	ConfigPath       string
 	Store            ConfigStore
 	ProviderRegistry ProviderRegistry
@@ -28,6 +29,7 @@ func New(opts Options) *Client {
 	return &Client{
 		service: app.NewService(app.ServiceOptions{
 			ConfigPath:       strings.TrimSpace(opts.ConfigPath),
+			Ingress:          toInternalIngressOptions(opts.Ingress),
 			Store:            newInternalStoreAdapter(opts.Store),
 			ProviderRegistry: newInternalRegistryAdapter(opts.ProviderRegistry),
 			ApplyConfig:      newInternalApplyAdapter(opts.ApplyFunc),
@@ -146,7 +148,7 @@ func (c *Client) ReleaseIngress(ctx context.Context, ref IngressRef) error {
 }
 
 func toInternalIngressSpec(spec IngressSpec) app.IngressSpec {
-	return app.IngressSpec{Name: spec.Name, LocalPort: spec.LocalPort, DialHost: spec.DialHost, Provider: spec.Provider, PublicHost: spec.PublicHost, CallbackPath: spec.CallbackPath, Owner: app.IngressOwnership{System: spec.Owner.System, ScopeID: spec.Owner.ScopeID}, ExpectedRevision: spec.ExpectedRevision, Metadata: spec.Metadata}
+	return app.IngressSpec{Binding: cloneBinding(spec.Binding), Name: spec.Name, LocalPort: spec.LocalPort, DialHost: spec.DialHost, Provider: spec.Provider, PublicHost: spec.PublicHost, CallbackPath: spec.CallbackPath, Owner: app.IngressOwnership{System: spec.Owner.System, ScopeID: spec.Owner.ScopeID}, ExpectedRevision: spec.ExpectedRevision, Metadata: spec.Metadata}
 }
 
 func toInternalIngressRef(ref IngressRef) app.IngressRef {
@@ -156,7 +158,7 @@ func toInternalIngressRef(ref IngressRef) app.IngressRef {
 func fromInternalIngress(item app.Ingress) Ingress {
 	metadata := map[string]string{}
 	maps.Copy(metadata, item.Metadata)
-	return Ingress{Name: item.Name, LocalHost: item.LocalHost, LocalPort: item.LocalPort, DialHost: item.DialHost, Provider: item.Provider, PublicHost: item.PublicHost, CallbackPath: item.CallbackPath, CallbackURL: item.CallbackURL, EndpointID: item.EndpointID, SessionID: item.SessionID, Owner: IngressOwnership{System: item.Owner.System, ScopeID: item.Owner.ScopeID}, State: IngressState(item.State), Revision: item.Revision, Metadata: metadata}
+	return Ingress{Binding: cloneBinding(item.Binding), Name: item.Name, LocalHost: item.LocalHost, LocalPort: item.LocalPort, DialHost: item.DialHost, Provider: item.Provider, PublicHost: item.PublicHost, CallbackPath: item.CallbackPath, CallbackURL: item.CallbackURL, EndpointID: item.EndpointID, SessionID: item.SessionID, Owner: IngressOwnership{System: item.Owner.System, ScopeID: item.Owner.ScopeID}, State: IngressState(item.State), Revision: item.Revision, Metadata: metadata}
 }
 
 func (c *Client) TunnelProviders() []string {
@@ -200,7 +202,11 @@ func newInternalStoreAdapter(store ConfigStore) app.ConfigStore {
 	if store == nil {
 		return nil
 	}
-	return internalStoreAdapter{store: store}
+	adapter := internalStoreAdapter{store: store}
+	if coordinator, ok := store.(CoordinatedIngressStore); ok {
+		return coordinatedStoreAdapter{internalStoreAdapter: adapter, CoordinatedIngressStore: coordinator}
+	}
+	return adapter
 }
 
 func (a internalStoreAdapter) Load(path string) (*config.Config, error) {
@@ -251,7 +257,7 @@ func (a internalRegistryAdapter) Resolve(name string) (tunnel.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return publicProviderAdapter{provider: provider}, nil
+	return adaptOwnedProvider(provider), nil
 }
 
 type publicProviderAdapter struct {
