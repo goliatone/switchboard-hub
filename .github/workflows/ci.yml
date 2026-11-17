@@ -66,8 +66,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          # Keep the quality toolchain compatible with the pinned lint/security tools.
-          go-version: '1.25.x'
+          # Use the patched toolchain supported by the pinned lint/security tools.
+          go-version: '1.26.x'
           cache: true
 
       - name: Run quality gate

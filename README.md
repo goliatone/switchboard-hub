@@ -352,6 +352,111 @@ func main() {
 }
 ```
 
+### Isolated ingress library contracts
+
+`Options.Ingress` opts into tunnel-only composition with explicit absolute
+`ConfigPath`, `StateDir`, and `RuntimeDir` paths. It requires no Switchboard CLI,
+Switchboard service, Caddy, or dnsmasq. Nil retains legacy composition; unsafe
+unowned cleanup now returns a recovery error instead of guessing ownership.
+
+The default isolated store supplies `CoordinatedIngressStore`; an injected store
+must implement that optional capability. Providers implement `OwnedIngressProvider`.
+`CredentialRef` stores an opaque reference; supplying one also requires
+`IngressOptions.Credentials` and `PrivateIngressInitializer`. Resolver errors and
+provider errors do not expose credential values, and supplied credential buffers
+are cleared after each operation. Provider implementations must not retain them.
+
+`IngressSpec.Binding` selects the HTTPS port/path and optionally asserts an owned
+endpoint ID and expected origin. An endpoint ID alone cannot adopt a resource.
+`IngressOptions.Helpers` and `HelperResolver` configure/discover provider helpers
+without running them during discovery. Providers validate their supported binding
+and helper capabilities before mutation.
+
+The default coordinator holds a cancellable cross-process lock across each
+mutation, records private durable progress, and atomically replaces config with
+file/directory sync. An enrollment marker binds the canonical config to its state
+directory and permanently excludes legacy config paths. Use dedicated quiescent
+state; old binaries/manual writers cannot be fenced by advisory locks. Back up
+config, enrollment marker and journals together. Do not remove markers to bypass
+recovery or silently move the state directory.
+
+Retry an interrupted operation with the same owner, intent and original expected
+revision. `IngressRecoveryProvider` inspects the exact recorded attempt before
+retrying uncertain effects and verifies recovered session identity. Ambiguity or
+conflicting edits fail safely. A recovered start settles to stopped, requiring a
+fresh explicit start; recovery never restores exposure automatically.
+
+The built-in Tailscale owned adapter requires explicit provider settings
+`local_api_socket` (an accessible Unix socket) and `coordination_dir` (one shared
+private directory per daemon across stores). Select an unused HTTPS port 443,
+8443 or 10000 and root path `/`. It uses a foreground watch and conditional
+LocalAPI updates; Stop/Release preserve other routes and refuse changed bindings.
+For an existing macOS GUI backend, explicitly set `local_api_transport: macos-gui`,
+omit `local_api_socket`, and supply an absolute trusted Tailscale CLI through
+`IngressOptions.Helpers["tailscale"]`. The initial tested pair is Homebrew CLI
+1.104.7 with GUI backend 1.104.4; other versions fail with setup guidance. The
+Unix mode remains the default (`local_api_transport: unix` is also accepted).
+GUI discovery captures `debug local-creds` through a bounded private pipe; it
+never executes the printed curl command, persists its token, starts a daemon or
+falls back to persistent CLI exposure. Requests use authenticated IPv4 loopback
+without proxies or redirects. Every store for the same GUI user must share one
+private coordination directory; the lock is independent of helper path and port.
+Authentication/identity changes fail safely; create a fresh client for explicit
+recovery, never automatically restore exposure.
+
+A read-only installation probe is available (no Serve/Funnel mutations):
+
+```sh
+SWITCHBOARD_TAILSCALE_GUI_PROBE=/opt/homebrew/bin/tailscale \
+  go test -tags=provider_live ./internal/tunnel/providers/tailscale \
+    -run '^TestLiveGUIReadOnlyTransport$' -count=1 -v
+```
+
+Passing this probe does not prove live A/B exposure or cleanup; the external
+observer and dedicated-route T08 checks remain required. Legacy unowned Tailscale
+Start/Stop refuse mutations; migrate explicitly instead of using global reset.
+
+Cloudflare owned lifecycle requires dedicated resources and an explicitly enrolled
+single writer. Configure provider `values` with `ownership_mode: single-writer`,
+`authority_id`, `account_id`, `zone_id`, a shared private `coordination_dir`, and an
+absolute `supervisor_path`. All stores on the authority host must share that
+coordination directory. Exclude dashboard, Terraform, legacy and other-host
+writers for enrolled resources; a scoped API token alone does not enforce this.
+Cloudflare does not document atomic conditional deletion. Observed drift refuses
+cleanup, but concurrent out-of-band changes during read/delete are unsupported.
+
+Build the per-session supervisor with
+`go build -o /absolute/path/switchboard-connector ./cmd/switchboard-connector`.
+Ship/pin it alongside cloudflared (2025.4.0+ with token-file support). This helper
+owns one child, has no provider API credential, and exits when its host pipe
+closes. Recovered callers contact its private socket; they never signal a PID.
+Keep the private runtime path short enough for a Unix socket (103 bytes maximum
+including the generated socket filename). Missing/mismatched supervisors or
+completion evidence preserve ambiguous processes and artifacts for recovery.
+Killing the supervisor itself with SIGKILL cannot prove child exit; do not delete
+its state or token file to bypass that conflict.
+
+Supply the API credential through `CredentialRef` and the host resolver, never
+provider values or process arguments. The connector gets an exclusive 0600 token
+file in a 0700 runtime directory and a minimal environment. Stop retains the DNS
+record/tunnel; Release verifies creation provenance and current snapshots, deletes
+owned DNS then tunnel without force, and retains progress on partial failure.
+Lost create replies reconcile the recorded single-writer attempt; ambiguous
+absence never triggers a blind second creation. Unowned collisions are refused.
+File deletion is not token revocation. Legacy API startup is outside this secure
+owned path, and legacy PID-only cleanup remains refused.
+
+Real-provider validation and an immutable adoption pin remain required. Offline
+contract and recovery checks are:
+
+```sh
+go test ./pkg/switchboard -run 'Test(OwnedIngressLibraryLifecycleWithoutCLIOrCaddy|DefaultIsolatedStoreRecoversThroughFacade)'
+go test ./internal/app -run TestT05
+go test ./internal/config -run TestIngressStore
+go test -race ./internal/tunnel/providers/tailscale -run TestOwned
+go test -race ./internal/tunnel/providers/cloudflare -run 'Test(CredentialFile|SecureConnectorCommand|Stop)'
+```
+
 ## Command reference
 
 Show top-level help:
@@ -524,3 +629,111 @@ Build local release snapshot:
 ```bash
 go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean
 ```
+
+### Dedicated provider validation (T08)
+
+Run the offline fault and observer checks from the repository root. They use
+controlled provider fixtures, temporary state, and loopback HTTPS. They cover
+ownership and revision conflicts, owner loss and restart recovery, drift,
+partial release, credential cleanup, and observer failure classification.
+
+```sh
+go test -race -count=1 ./tools/validation/... ./pkg/switchboard ./internal/app ./internal/tunnel/providers/...
+```
+
+The opt-in harness runs three normal A/B lifecycle repetitions, continuously
+checks B, and tests wrong-owner, stale-revision and canceled-operation refusal.
+It uses a tiny loopback HTTP test origin; no camera or media service is involved.
+It does not establish the remaining fault/restart or immutable adoption gates.
+
+For the live proof, reserve the following:
+
+| Fixture | Setup |
+| --- | --- |
+| Cloudflare A/B | Two different unused public names in one Cloudflare-managed zone, both on port 443 and covered by an edge certificate. Leave their DNS records and tunnels unprovisioned so the harness can prove creation and release. Supply the Cloudflare account and zone IDs and a token scoped to that account's Cloudflare Tunnel Edit and that zone's DNS Edit. Install pinned cloudflared with `--token-file` support and build the candidate's `switchboard-connector`. Select one writer and one shared coordination directory for both scopes. [Cloudflare API setup](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/) |
+| Tailscale A/B | One dedicated running node with its exact `.ts.net` FQDN, MagicDNS, HTTPS certificates and the Funnel node attribute. Reserve two unused HTTPS ports from 443, 8443 and 10000. Keep the third port available when a separate private Serve control is needed. Use the accessible Unix LocalAPI socket or the supported macOS GUI setup above. [Tailscale Funnel requirements](https://tailscale.com/docs/features/tailscale-funnel) |
+| Observers | Run the probe from an Internet-connected machine outside the tailnet and test-host network. If using SSH, verify the dedicated alias and host key during setup. For the private Serve visibility case, also verify reachability from a tailnet-authorized client. |
+| Fault and restart fixture | Use an isolated VM/test machine or an approved maintenance window where Tailscale daemon restart and host reboot are allowed. Keep state across reboots. Reserve disposable routes for operator drift/collision and a controlled permission-denial/retry case. Unrelated production routes stay outside the test. |
+
+The isolated host can run both providers. The external probe needs a separate
+network vantage. Record provider-side ownership and cleanup alongside public
+observations. For Cloudflare, an authenticated provider view can confirm zero
+connector sessions after Stop and removal of the exact owned DNS record and
+tunnel after Release. Cloudflare error 1033 indicates no healthy connector.
+For Tailscale, capture the effective route and public/private visibility before
+and after the case. Keep B reachable while observing A. Correlate provider and
+external evidence when the generic probe reports inconclusive.
+[Cloudflare Tunnel troubleshooting](https://developers.cloudflare.com/tunnel/troubleshooting/)
+
+Create an owner-only (0600) JSON file containing `provider`, a fresh absolute
+`run_dir` below a private existing parent, `helper_path`, `probe_path`,
+`probe_network`, `host_a`, `host_b`, `port_a`, `port_b`,
+`dedicated_resources: true`, and provider `values` from the setup above.
+Cloudflare also requires `credential_env` naming the environment variable that
+contains the private API credential. Never put its value in JSON. Use distinct
+unused Cloudflare hostnames on port 443. Tailscale uses the test node's same
+hostname with two distinct otherwise unused supported ports. Do not use existing
+application endpoints or run restart cases on a shared production host.
+
+`probe_path` is an explicitly selected executable that performs the request from
+outside the tailnet/local network. It receives URL and expected response text as
+two arguments. Exit 0 means exact expected response, 3 means independently
+confirmed absence of that response, and all other exits mean inconclusive/error.
+The observer must distinguish service absence from observer/network failure.
+Probe output is discarded; its executable hash and declared network are recorded.
+The harness never manufactures external reachability from a local HTTP check.
+
+The bundled `ingress-observer` makes a direct request, verifies TLS, and
+does not follow redirects. It reports exact HTTP 200 responses as present and
+verified HTTP 404 or 410 responses without the fixture marker as absent.
+DNS, TLS, transport, redirect, unexpected status/body and timeout failures
+are inconclusive. An endpoint that disappears without a verified HTTP response
+requires additional observation before a live absence result can pass.
+
+Build the probe for the external machine's OS and architecture:
+
+```sh
+go build -o ingress-observer ./tools/validation/cmd/ingress-observer
+```
+
+For an already configured SSH observer, the local `probe_path` wrapper can
+send the two values on stdin to a fixed remote executable. Replace the host
+alias and installed path for the dedicated observer. The values are not part
+of the remote command. Record the installed observer binary's SHA-256 with
+the run evidence when using a wrapper.
+
+```sh
+#!/bin/sh
+printf '%s\n%s\n' "$1" "$2" |
+  /usr/bin/ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    t08-observer /absolute/path/ingress-observer --stdin
+```
+
+Run the local preflight while arranging the live credentials and observer. It
+validates the JSON, helper file metadata, fresh run path and applicable local
+transport files. It never starts a helper, reads the API token, connects to the
+observer or contacts a provider.
+
+```sh
+SWITCHBOARD_INGRESS_VALIDATION=/absolute/private/validation.json \
+  go test -tags=provider_live ./tools/validation -run '^TestLiveOwnedIngressPreflight$' -count=1 -v
+```
+
+Use short private paths for Cloudflare, such as a fresh run below
+`/private/tmp/sb-t08` on macOS, to leave room for the connector's Unix socket.
+Once the fixtures are authorized for live use and the Cloudflare token is
+available via the named environment variable, run the provider check.
+
+```sh
+SWITCHBOARD_INGRESS_VALIDATION=/absolute/private/validation.json \
+  go test -tags=provider_live ./tools/validation -run '^TestLiveOwnedIngress$' -count=1 -v
+```
+
+Missing setup fails before provider contact. Reused run directories are refused;
+failed attempts, journals and cleanup responsibility remain intact. Inspect the
+private `run_dir/evidence.json` and use the recorded owner/intent/revision for
+recovery rather than deleting state or blindly rerunning. The report binds the
+working-source fingerprints and helper/probe hashes and always leaves
+`t08_complete` false: real crash/drift/permission/visibility/restart observations,
+actual ctx checks and a maintainer-selected immutable module pin must be reconciled
+separately. Passing this subset does not authorize Camstream T01.
